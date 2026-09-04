@@ -1,0 +1,9 @@
+{
+  "name": "Anna Document Workspace",
+  "slug": "anna-document-workspace",
+  "category": "productivity",
+  "tagline": "Ask questions across your documents with grounded answers.",
+  "description": "A local-first document workspace for uploading PDFs, hybrid retrieval, source-backed answers, and persistent conversations.",
+  "homepage": "https://anna.partners",
+  "pricing_model": "free"
+}

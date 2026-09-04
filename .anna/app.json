@@ -1,0 +1,8 @@
+{
+  "$schema": "anna-app-identity/v1",
+  "host": "https://anna.partners",
+  "app_id": 250,
+  "slug": "anna-document-workspace",
+  "handle": "parths",
+  "first_published_at": "2026-09-03T18:16:46.900Z"
+}

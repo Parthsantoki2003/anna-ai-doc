@@ -1,0 +1,44 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# Web Framework & Server
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+gunicorn==21.2.0
+python-multipart==0.0.6
+httpx>=0.27.0,<0.28.0
+
+# Vector Database & Search
+qdrant-client>=1.7.0,<2.0.0
+rank-bm25==0.2.2
+
+# Machine Learning & Embeddings (Compatible PyTorch & Transformers versions)
+torch==2.5.1+cpu
+transformers==4.44.2
+sentence-transformers==3.0.1
+
+# LLM & AI
+groq==0.4.2
+
+# Document Processing
+PyMuPDF==1.23.8
+pytesseract==0.3.10
+pillow>=10.0.0
+
+# Text Processing
+langchain-text-splitters==0.0.1
+langchain-core==0.1.33
+
+# Utilities
+pydantic==2.5.0
+python-dotenv==1.0.0
+numpy==1.26.4
+
+# Monitoring & Logging
+prometheus-client==0.19.0
+
+# Optional integrations
+python-jose[cryptography]==3.3.0
+boto3==1.28.0  # If using S3-compatible storage
+
+# Production Deployment
+redis==5.0.0  # For distributed caching

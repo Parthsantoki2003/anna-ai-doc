@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Anna Document Workspace - grounded PDF Q&A with conversation memory">
+    <meta name="theme-color" content="#ff9e6c">
+    <title>Anna Document Workspace | Grounded PDF Q&A</title>
+    <script src="https://cdn.tailwindcss.com?plugins=forms,typography,aspect-ratio"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
+    <style>
+        :root {
+            --primary: #4f46e5;
+            --primary-dark: #4338ca;
+            --success: #10b981;
+            --error: #ef4444;
+            --warning: #f59e0b;
+        }
+        * { scrollbar-width: thin; scrollbar-color: #d1d5db #f3f4f6; }
+        *::-webkit-scrollbar { width: 8px; }
+        *::-webkit-scrollbar-track { background: #f3f4f6; }
+        *::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 4px; }
+        *::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
+        
+        .fade-in { animation: fadeIn 0.3s ease-in; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        
+        .slide-in { animation: slideIn 0.3s ease-out; }
+        @keyframes slideIn { from { transform: translateY(10px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        
+        .pulse-dot { animation: pulse-animation 2s infinite; }
+        @keyframes pulse-animation { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        
+        .message-enter { animation: messageEnter 0.4s ease-out; }
+        @keyframes messageEnter { 
+            from { transform: translateY(20px) scale(0.95); opacity: 0; }
+            to { transform: translateY(0) scale(1); opacity: 1; }
+        }
+        
+        .toast-notification {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 9999;
+            animation: slideInRight 0.3s ease-out;
+        }
+        @keyframes slideInRight {
+            from { transform: translateX(400px); }
+            to { transform: translateX(0); }
+        }
+        
+        .source-badge {
+            display: inline-block;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            margin-right: 8px;
+        }
+        
+        .confidence-bar {
+            display: inline-block;
+            height: 4px;
+            background: #e5e7eb;
+            border-radius: 2px;
+            overflow: hidden;
+            width: 60px;
+        }
+        
+        .confidence-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #ef4444, #f59e0b, #10b981);
+            border-radius: 2px;
+        }
+        
+        .shimmer {
+            background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+            background-size: 200% 100%;
+            animation: shimmer 1.5s infinite;
+        }
+        @keyframes shimmer {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-slate-50 to-slate-100 h-screen flex text-slate-800 font-sans antialiased">
+
+    <!-- Notifications Container -->
+    <div id="notificationContainer" class="fixed top-0 right-0 z-50 p-4 space-y-3 pointer-events-none"></div>
+
+    <!-- Sidebar -->
+    <aside class="w-80 bg-white border-r border-slate-200 flex flex-col shadow-lg z-10 overflow-hidden">
+        <!-- Header -->
+        <div class="p-6 border-b border-slate-100 bg-gradient-to-r from-indigo-600 to-indigo-700 text-white flex-shrink-0">
+            <div class="flex items-center gap-3 mb-2">
+                <div class="w-10 h-10 bg-white bg-opacity-20 rounded-lg flex items-center justify-center">
+                    <i class="fa-solid fa-brain text-xl"></i>
+                </div>
+                <div>
+                    <h1 class="text-2xl font-bold">Anna Document Workspace</h1>
+                    <p class="text-sm text-indigo-100 font-medium">Anna OS compatible</p>
+                </div>
+            </div>
+            <p class="text-sm text-indigo-100">Grounded document Q&A</p>
+        </div>
+
+        <!-- Main Content -->
+        <div class="flex-1 overflow-y-auto flex flex-col">
+            <!-- Upload Section -->
+            <div class="p-6 border-b border-slate-100 flex-shrink-0">
+                <h2 class="text-xs uppercase font-bold text-slate-500 tracking-widest mb-4">📄 Upload Document</h2>
+                <form id="ingestForm" class="space-y-4">
+                    <div class="relative">
+                        <div class="border-2 border-dashed border-indigo-300 rounded-xl p-6 text-center hover:bg-indigo-50 hover:border-indigo-400 transition cursor-pointer group"
+                             onclick="document.getElementById('fileInput').click()"
+                             ondragover="this.classList.add('bg-indigo-50', 'border-indigo-400')"
+                             ondragleave="this.classList.remove('bg-indigo-50', 'border-indigo-400')"
+                             ondrop="handleDrop(event)">
+                            <i class="fa-solid fa-cloud-arrow-up text-4xl text-indigo-400 mb-2 group-hover:scale-110 transition"></i>
+                            <p class="text-sm font-semibold text-slate-700" id="fileNameDisplay">Click or drag PDF</p>
+                            <p class="text-xs text-slate-500 mt-1">Max 50MB</p>
+                            <input type="file" id="fileInput" name="file" accept=".pdf" class="hidden" onchange="handleFileSelect(event)">
+                        </div>
+                        <div id="fileProgress" class="hidden mt-3">
+                            <div class="w-full bg-slate-200 rounded-full h-2">
+                                <div id="fileProgressBar" class="bg-indigo-600 h-2 rounded-full transition-all" style="width: 0%"></div>
+                            </div>
+                            <p class="text-xs text-slate-500 mt-1 text-center" id="fileProgressText">Uploading...</p>
+                        </div>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Documents List -->
+            <div class="p-6 border-b border-slate-100 flex-shrink-0">
+                <h2 class="text-xs uppercase font-bold text-slate-500 tracking-widest mb-4">📚 Uploaded Documents</h2>
+                <div id="documentsList" class="space-y-2 max-h-48 overflow-y-auto">
+                    <p class="text-sm text-slate-500 text-center py-4">No documents uploaded yet</p>
+                </div>
+            </div>
+
+            <!-- Stats -->
+            <div class="p-6 border-b border-slate-100 flex-shrink-0">
+                <h2 class="text-xs uppercase font-bold text-slate-500 tracking-widest mb-3">📊 Statistics</h2>
+                <div class="grid grid-cols-2 gap-3">
+                    <div class="bg-indigo-50 rounded-lg p-3">
+                        <p class="text-xs text-slate-600 font-medium">Total Chunks</p>
+                        <p class="text-xl font-bold text-indigo-600" id="statsChunks">0</p>
+                    </div>
+                    <div class="bg-green-50 rounded-lg p-3">
+                        <p class="text-xs text-slate-600 font-medium">Documents</p>
+                        <p class="text-xl font-bold text-green-600" id="statsDocuments">0</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Conversation History -->
+            <div class="p-6 flex-1 overflow-y-auto">
+                <h2 class="text-xs uppercase font-bold text-slate-500 tracking-widest mb-4">💬 Conversation</h2>
+                <div id="conversationHistory" class="space-y-3">
+                    <p class="text-sm text-slate-500 text-center py-4">No conversation yet</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- New Conversation Button -->
+        <div class="p-6 border-t border-slate-100 flex-shrink-0">
+            <button onclick="startNewConversation()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded-lg transition flex items-center justify-center gap-2">
+                <i class="fa-solid fa-plus"></i>
+                <span>New Conversation</span>
+            </button>
+        </div>
+    </aside>
+
+    <!-- Main Chat Area -->
+    <main class="flex-1 flex flex-col bg-white">
+        <!-- Chat Header -->
+        <header class="bg-white border-b border-slate-200 px-8 py-4 flex items-center justify-between shadow-sm">
+            <div>
+                <h2 class="text-2xl font-bold text-slate-900">Document Q&A Assistant</h2>
+                <p class="text-sm text-slate-600 mt-1" id="chatStatus">Upload a document to get started</p>
+            </div>
+            <div class="text-right">
+                <p class="text-sm font-medium text-slate-700" id="processingTime"></p>
+            </div>
+        </header>
+
+        <!-- Messages Area -->
+        <div id="messagesContainer" class="flex-1 overflow-y-auto px-8 py-6 space-y-6">
+            <div class="text-center py-12">
+                <i class="fa-solid fa-sparkles text-6xl text-slate-300 mb-4"></i>
+                <p class="text-slate-500 text-lg">Upload a document and ask questions to get started</p>
+            </div>
+        </div>
+
+        <!-- Query Input Area -->
+        <div class="bg-gradient-to-t from-slate-50 to-white border-t border-slate-200 px-8 py-6">
+            <form id="queryForm" class="flex gap-3" onsubmit="handleQuerySubmit(event)">
+                <input 
+                    type="text" 
+                    id="queryInput" 
+                    placeholder="Ask a question about your documents..." 
+                    class="flex-1 px-4 py-3 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                    disabled
+                >
+                <button 
+                    type="submit" 
+                    id="submitBtn" 
+                    class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-6 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                    disabled
+                >
+                    <i class="fa-solid fa-paper-plane"></i>
+                    <span>Send</span>
+                </button>
+            </form>
+        </div>
+    </main>
+
+    <script>
+        const API_BASE = 'https://anna-document-workspace-wj7amu7tcq-uc.a.run.app';
+        let currentConversationId = null;
+        let conversationHistory = [];
+        let documentsLoaded = [];
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            startNewConversation();
+            loadDocuments();
+            loadStats();
+            setInterval(loadStats, 5000);
+        });
+
+        // File handling
+        function handleFileSelect(event) {
+            const file = event.target.files[0];
+            if (file) uploadFile(file);
+        }
+
+        function handleDrop(event) {
+            event.preventDefault();
+            event.stopPropagation();
+            const files = event.dataTransfer.files;
+            if (files.length > 0) uploadFile(files[0]);
+        }
+
+        async function uploadFile(file) {
+            if (!file.name.endsWith('.pdf')) {
+                showNotification('Only PDF files are supported', 'error');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('chunk_strategy', 'recursive');
+            formData.append('chunk_size', 500);
+            formData.append('chunk_overlap', 50);
+
+            document.getElementById('fileProgress').classList.remove('hidden');
+            document.getElementById('fileNameDisplay').textContent = `Uploading ${file.name}...`;
+
+            try {
+                const response = await fetch(`${API_BASE}/ingest`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) throw new Error('Upload failed');
+
+                const data = await response.json();
+                showNotification(`Document uploaded: ${data.file_name} (${data.chunks_created} chunks)`, 'success');
+                
+                document.getElementById('fileNameDisplay').textContent = 'Click or drag PDF';
+                document.getElementById('fileInput').value = '';
+                document.getElementById('fileProgress').classList.add('hidden');
+                
+                loadDocuments();
+                loadStats();
+                enableQueryInput();
+            } catch (error) {
+                showNotification(`Upload failed: ${error.message}`, 'error');
+                document.getElementById('fileProgress').classList.add('hidden');
+            }
+        }
+
+        async function loadDocuments() {
+            try {
+                const response = await fetch(`${API_BASE}/documents`);
+                const documents = await response.json();
+                documentsLoaded = documents;
+
+                const list = document.getElementById('documentsList');
+                if (documents.length === 0) {
+                    list.innerHTML = '<p class="text-sm text-slate-500 text-center py-4">No documents uploaded yet</p>';
+                    return;
+                }
+
+                list.innerHTML = documents.map(doc => `
+                    <div class="bg-slate-50 rounded-lg p-3 flex items-start justify-between hover:bg-slate-100 transition">
+                        <div class="flex-1">
+                            <p class="text-sm font-semibold text-slate-700">${doc.file_name}</p>
+                            <p class="text-xs text-slate-500">${doc.chunks_count} chunks</p>
+                        </div>
+                        <button onclick="deleteDocument('${doc.file_id}', '${doc.file_name}')" 
+                                class="text-red-500 hover:text-red-700 hover:bg-red-50 p-2 rounded transition"
+                                title="Delete document">
+                            <i class="fa-solid fa-trash-alt"></i>
+                        </button>
+                    </div>
+                `).join('');
+            } catch (error) {
+                console.error('Failed to load documents:', error);
+            }
+        }
+
+        async function deleteDocument(fileId, fileName) {
+            if (!confirm(`Delete "${fileName}"? This will remove it from the knowledge base.`)) return;
+
+            try {
+                const response = await fetch(`${API_BASE}/documents/${fileId}`, {
+                    method: 'DELETE'
+                });
+
+                if (!response.ok) throw new Error('Delete failed');
+
+                showNotification(`Document "${fileName}" deleted`, 'success');
+                loadDocuments();
+                loadStats();
+            } catch (error) {
+                showNotification(`Delete failed: ${error.message}`, 'error');
+            }
+        }
+
+        async function loadStats() {
+            try {
+                const response = await fetch(`${API_BASE}/stats`);
+                const stats = await response.json();
+                document.getElementById('statsChunks').textContent = stats.total_chunks;
+                document.getElementById('statsDocuments').textContent = stats.total_documents;
+            } catch (error) {
+                console.error('Failed to load stats:', error);
+            }
+        }
+
+        function startNewConversation() {
+            currentConversationId = null;
+            conversationHistory = [];
+            document.getElementById('messagesContainer').innerHTML = `
+                <div class="text-center py-12">
+                    <i class="fa-solid fa-sparkles text-6xl text-slate-300 mb-4"></i>
+                    <p class="text-slate-500 text-lg">Upload a document and ask questions</p>
+                </div>
+            `;
+            document.getElementById('conversationHistory').innerHTML = '<p class="text-sm text-slate-500 text-center py-4">No conversation yet</p>';
+            enableQueryInput();
+        }
+
+        async function handleQuerySubmit(event) {
+            event.preventDefault();
+            
+            const query = document.getElementById('queryInput').value.trim();
+            if (!query) return;
+
+            if (documentsLoaded.length === 0) {
+                showNotification('Please upload a document first', 'warning');
+                return;
+            }
+
+            // Add user message to UI
+            addMessageToUI('user', query);
+            document.getElementById('queryInput').value = '';
+            document.getElementById('submitBtn').disabled = true;
+
+            // Show loading indicator
+            const loadingId = addLoadingMessage();
+
+            try {
+                const response = await fetch(`${API_BASE}/query`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        query,
+                        top_k: 5,
+                        generate_answer: true,
+                        conversation_context: conversationHistory
+                    })
+                });
+
+                if (!response.ok) throw new Error('Query failed');
+
+                const data = await response.json();
+                
+                // Remove loading
+                document.getElementById(loadingId)?.remove();
+
+                // Update conversation
+                conversationHistory.push({
+                    role: 'user',
+                    query,
+                    timestamp: new Date().toISOString()
+                });
+
+                conversationHistory.push({
+                    role: 'assistant',
+                    answer: data.answer,
+                    sources: data.sources,
+                    timestamp: new Date().toISOString()
+                });
+
+                currentConversationId = data.conversation_id;
+
+                // Add assistant message with sources
+                addAssistantMessage(data.answer, data.sources, data.processing_time);
+                updateConversationHistory();
+
+            } catch (error) {
+                document.getElementById(loadingId)?.remove();
+                showNotification(`Query failed: ${error.message}`, 'error');
+            } finally {
+                document.getElementById('submitBtn').disabled = false;
+            }
+        }
+
+        function addMessageToUI(role, content) {
+            const container = document.getElementById('messagesContainer');
+            
+            if (container.querySelector('.text-center')) {
+                container.innerHTML = '';
+            }
+
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message-enter flex ${role === 'user' ? 'justify-end' : 'justify-start'}`;
+            messageDiv.innerHTML = `
+                <div class="max-w-2xl ${role === 'user' ? 'bg-indigo-600 text-white rounded-2xl rounded-tr-none' : 'bg-slate-100 text-slate-900 rounded-2xl rounded-tl-none'} px-6 py-3">
+                    <p class="text-sm">${escapeHtml(content)}</p>
+                </div>
+            `;
+            container.appendChild(messageDiv);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function addLoadingMessage() {
+            const container = document.getElementById('messagesContainer');
+            const id = `loading-${Date.now()}`;
+            
+            const messageDiv = document.createElement('div');
+            messageDiv.id = id;
+            messageDiv.className = 'message-enter flex justify-start';
+            messageDiv.innerHTML = `
+                <div class="bg-slate-100 rounded-2xl rounded-tl-none px-6 py-4">
+                    <div class="flex gap-2">
+                        <div class="w-2 h-2 bg-slate-400 rounded-full pulse-dot"></div>
+                        <div class="w-2 h-2 bg-slate-400 rounded-full pulse-dot" style="animation-delay: 0.2s"></div>
+                        <div class="w-2 h-2 bg-slate-400 rounded-full pulse-dot" style="animation-delay: 0.4s"></div>
+                    </div>
+                </div>
+            `;
+            container.appendChild(messageDiv);
+            container.scrollTop = container.scrollHeight;
+            
+            return id;
+        }
+
+        function addAssistantMessage(answer, sources, processingTime) {
+    const container = document.getElementById('messagesContainer');
+    
+    const messageDiv = document.createElement('div');
+    messageDiv.className = 'message-enter flex justify-start';
+    
+    // We removed the entire sourcesHTML block here
+    
+    messageDiv.innerHTML = `
+        <div class="max-w-2xl bg-slate-50 rounded-2xl rounded-tl-none px-6 py-4 border border-slate-200">
+            <div class="text-sm text-slate-900 leading-relaxed mb-2">${marked.parse(answer || 'No answer generated')}</div>
+            <p class="text-xs text-slate-500 mt-4 pt-4 border-t border-slate-200">⏱️ Response time: ${processingTime.toFixed(2)}s</p>
+        </div>
+    `;
+    
+    container.appendChild(messageDiv);
+    container.scrollTop = container.scrollHeight;
+}
+
+        function updateConversationHistory() {
+            const container = document.getElementById('conversationHistory');
+            
+            if (conversationHistory.length === 0) {
+                container.innerHTML = '<p class="text-sm text-slate-500 text-center py-4">No conversation yet</p>';
+                return;
+            }
+
+            container.innerHTML = conversationHistory
+                .filter(msg => msg.role === 'user')
+                .slice(-5)
+                .map(msg => `
+                    <div class="p-3 bg-indigo-50 rounded-lg hover:bg-indigo-100 cursor-pointer transition"
+                         onclick="document.getElementById('queryInput').value = '${escapeHtml(msg.query)}'; document.getElementById('queryInput').focus()">
+                        <p class="text-xs font-semibold text-indigo-900 truncate">${escapeHtml(msg.query)}</p>
+                    </div>
+                `).join('');
+        }
+
+        function enableQueryInput() {
+            const hasDocuments = documentsLoaded.length > 0;
+            document.getElementById('queryInput').disabled = !hasDocuments;
+            document.getElementById('submitBtn').disabled = !hasDocuments;
+            
+            if (hasDocuments) {
+                document.getElementById('chatStatus').textContent = `${documentsLoaded.length} document(s) ready • Ask away!`;
+            }
+        }
+
+        function showNotification(message, type = 'info') {
+            const container = document.getElementById('notificationContainer');
+            
+            const colors = {
+                success: 'bg-green-500',
+                error: 'bg-red-500',
+                warning: 'bg-yellow-500',
+                info: 'bg-blue-500'
+            };
+
+            const notification = document.createElement('div');
+            notification.className = `toast-notification ${colors[type]} text-white px-6 py-3 rounded-lg shadow-lg flex items-center gap-3 pointer-events-auto`;
+            notification.innerHTML = `
+                <i class="fa-solid fa-${type === 'success' ? 'check' : type === 'error' ? 'exclamation' : type === 'warning' ? 'triangle-exclamation' : 'info'}-circle"></i>
+                <span>${escapeHtml(message)}</span>
+            `;
+
+            container.appendChild(notification);
+            setTimeout(() => notification.remove(), 4000);
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>
