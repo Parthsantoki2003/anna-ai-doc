@@ -187,7 +187,7 @@ app = FastAPI(
 )
 
 # --- CORS Configuration ---
-allowed_origins_raw = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:5173,http://localhost:8080")
+allowed_origins_raw = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:5173,http://localhost:8080,https://anna.partners")
 if allowed_origins_raw.strip() == "*":
     allowed_origins = ["*"]
     logger.warning("⚠️  CORS set to '*' - NOT recommended for production")
