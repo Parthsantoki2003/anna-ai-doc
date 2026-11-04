@@ -2,7 +2,7 @@
   "name": "DocuMind",
   "slug": "anna-document-workspace",
   "category": "productivity",
-  "tagline": "Ask questions across your documents with grounded answers.",
+  "tagline": "Intelligent document assistant for Anna OS. Upload PDFs and get instant, zero-hallucination answers backed strictly by verified citations.",
   "description": "A local-first document workspace for uploading PDFs, hybrid retrieval, source-backed answers, and persistent conversations.",
   "homepage": "https://github.com/Parthsantoki2003/anna-ai-doc",
   "pricing_model": "free"
