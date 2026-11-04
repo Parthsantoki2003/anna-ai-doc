@@ -33,3 +33,6 @@ dist/
 .idea/
 .DS_Store
 Thumbs.db
+env.yaml
+.anna/
+model_cache/

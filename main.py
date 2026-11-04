@@ -6,18 +6,19 @@ import json
 import fitz  # PyMuPDF
 import pytesseract
 from PIL import Image
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Depends, Header
 from starlette.datastructures import Headers
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from typing import List, Optional, Dict
-from qdrant_client import QdrantClient
+from qdrant_client import QdrantClient, models
 from qdrant_client.models import Distance, VectorParams, PointStruct
 from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
 from langchain_text_splitters import RecursiveCharacterTextSplitter, CharacterTextSplitter
 from groq import Groq
 import uuid
+import re
 from io import BytesIO
 from urllib.parse import urlparse
 import httpx
@@ -28,9 +29,16 @@ import logging
 from datetime import datetime, timezone
 import time
 from contextlib import asynccontextmanager
-from pydantic import BaseModel, ConfigDict
 
 load_dotenv()
+
+def get_env_clean(key: str, default: Optional[str] = None) -> Optional[str]:
+    """Retrieve an environment variable stripped of whitespace, carriage returns, newlines, and outer quotes."""
+    val = os.getenv(key)
+    if val is not None:
+        val = val.strip().strip("'\"").strip("\r\n").strip()
+        return val if val else default
+    return default
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -41,16 +49,18 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- Optional S3-compatible object storage (Supabase Storage) ---
-S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
-S3_ENDPOINT_URL = os.getenv("AWS_ENDPOINT_URL_S3")
+S3_BUCKET_NAME = get_env_clean("S3_BUCKET_NAME")
+S3_ENDPOINT_URL = get_env_clean("AWS_ENDPOINT_URL_S3")
 s3_client = None
-if S3_BUCKET_NAME and S3_ENDPOINT_URL and os.getenv("AWS_ACCESS_KEY_ID") and os.getenv("AWS_SECRET_ACCESS_KEY"):
+aws_ak = get_env_clean("AWS_ACCESS_KEY_ID")
+aws_sk = get_env_clean("AWS_SECRET_ACCESS_KEY")
+if S3_BUCKET_NAME and S3_ENDPOINT_URL and aws_ak and aws_sk:
     s3_client = boto3.client(
         "s3",
         endpoint_url=S3_ENDPOINT_URL,
-        region_name=os.getenv("AWS_REGION", "us-east-1"),
-        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+        region_name=get_env_clean("AWS_REGION", "us-east-1"),
+        aws_access_key_id=aws_ak,
+        aws_secret_access_key=aws_sk,
     )
     logger.info("Supabase S3 storage configured")
 else:
@@ -86,6 +96,9 @@ class QueryResponse(BaseModel):
     processing_time: float
     model: str = "llama-3.3-70b"
     conversation_id: str
+    fallback_required: Optional[bool] = False
+    fallback_system_prompt: Optional[str] = None
+    fallback_user_prompt: Optional[str] = None
 
 class ConversationMessage(BaseModel):
     role: str
@@ -192,7 +205,7 @@ if allowed_origins_raw.strip() == "*":
     allowed_origins = ["*"]
     logger.warning("⚠️  CORS set to '*' - NOT recommended for production")
 else:
-    allowed_origins = [origin.strip() for origin in allowed_origins_raw.split(",") if origin.strip()]
+    allowed_origins = [origin.strip() for origin in re.split(r"[,;]", allowed_origins_raw) if origin.strip()]
 
 logger.info(f"✓ CORS allowed origins: {allowed_origins}")
 
@@ -201,7 +214,7 @@ app.add_middleware(
     allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
+    allow_headers=["Content-Type", "Authorization", "X-User-Id", "Accept"],
     max_age=3600,
 )
 
@@ -218,15 +231,15 @@ async def log_requests(request: Request, call_next):
 # --- Initialize Clients & Models ---
 QDRANT_MODE = "in-memory"
 try:
-    qdrant_url = os.getenv("QDRANT_URL")
-    qdrant_host = os.getenv("QDRANT_HOST")
-    qdrant_api_key = os.getenv("QDRANT_API_KEY")
+    qdrant_url = get_env_clean("QDRANT_URL")
+    qdrant_host = get_env_clean("QDRANT_HOST")
+    qdrant_api_key = get_env_clean("QDRANT_API_KEY")
     if qdrant_url:
         qdrant = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
         QDRANT_MODE = f"persistent ({qdrant_url})"
         logger.info(f"✓ Qdrant connected to {qdrant_url}")
     elif qdrant_host:
-        qdrant_port = int(os.getenv("QDRANT_PORT", "6333"))
+        qdrant_port = int(get_env_clean("QDRANT_PORT", "6333"))
         qdrant = QdrantClient(host=qdrant_host, port=qdrant_port, api_key=qdrant_api_key)
         QDRANT_MODE = f"persistent ({qdrant_host}:{qdrant_port})"
         logger.info(f"✓ Qdrant connected to {qdrant_host}:{qdrant_port}")
@@ -234,34 +247,73 @@ try:
         qdrant = QdrantClient(":memory:")
         logger.info("✓ Qdrant initialized (in-memory mode)")
 
-    embedder = SentenceTransformer('all-MiniLM-L6-v2')
-    logger.info("✓ Embedder loaded")
+    model_path = get_env_clean("EMBEDDING_MODEL_PATH", "/app/model_cache" if os.path.exists("/app/model_cache") else ("./model_cache" if os.path.exists("./model_cache") else "all-MiniLM-L6-v2"))
+    embedder = SentenceTransformer(model_path)
+    logger.info(f"✓ Embedder loaded from {model_path}")
 
-    groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+    groq_api_key = get_env_clean("GROQ_API_KEY")
+    groq_client = Groq(api_key=groq_api_key)
     logger.info("✓ Groq client initialized")
 except Exception as e:
     logger.error(f"✗ Initialization failed: {e}")
     raise
 
 COLLECTION_NAME = "pdf_knowledge_base_v4"
-try:
-    if not qdrant.collection_exists(collection_name=COLLECTION_NAME):
-        qdrant.create_collection(
-            collection_name=COLLECTION_NAME,
-            vectors_config=VectorParams(size=384, distance=Distance.COSINE),
-        )
-        logger.info("✓ Qdrant collection created")
-    else:
-        logger.info(f"✓ Qdrant collection '{COLLECTION_NAME}' exists")
-except Exception as e:
-    logger.error(f"✗ Collection creation failed: {e}")
+METADATA_COLLECTION = "documents_metadata_v1"
 
-# Global state - PERSISTENT across queries and restarts
+def init_qdrant_collections():
+    """Ensure vector and metadata collections and payload indexes exist"""
+    try:
+        # 1. Main vector collection for text chunks
+        if not qdrant.collection_exists(collection_name=COLLECTION_NAME):
+            qdrant.create_collection(
+                collection_name=COLLECTION_NAME,
+                vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+            )
+            logger.info(f"✓ Qdrant collection '{COLLECTION_NAME}' created")
+        else:
+            logger.info(f"✓ Qdrant collection '{COLLECTION_NAME}' exists")
+
+        # 2. Metadata collection for user document catalogs
+        if not qdrant.collection_exists(collection_name=METADATA_COLLECTION):
+            qdrant.create_collection(
+                collection_name=METADATA_COLLECTION,
+                vectors_config=VectorParams(size=1, distance=Distance.COSINE),
+            )
+            logger.info(f"✓ Qdrant metadata collection '{METADATA_COLLECTION}' created")
+        else:
+            logger.info(f"✓ Qdrant metadata collection '{METADATA_COLLECTION}' exists")
+
+        # 3. Create payload indexes on user_id and file_id for both collections for instant filtered lookups
+        for coll in [COLLECTION_NAME, METADATA_COLLECTION]:
+            for field in ["user_id", "file_id"]:
+                try:
+                    qdrant.create_payload_index(
+                        collection_name=coll,
+                        field_name=field,
+                        field_schema=models.PayloadSchemaType.KEYWORD,
+                    )
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.warning(f"Qdrant collection setup note: {e}")
+
+init_qdrant_collections()
+
+# Global state and tenant helpers
 bm25_index = None
 doc_lookup = {}
 documents_list = []
-current_file_name = None
-conversations = {}
+user_doc_lookups: Dict[str, Dict[str, Dict]] = {}
+conversations: Dict[str, List[ConversationMessage]] = {}
+
+def get_current_user_id(x_user_id: Optional[str] = Header(None, alias="X-User-Id")) -> str:
+    """Extract and validate tenant user ID from X-User-Id header"""
+    if x_user_id and x_user_id.strip():
+        cleaned = re.sub(r"[^a-zA-Z0-9_\-]", "", x_user_id.strip())
+        if cleaned:
+            return cleaned[:128]
+    return "default_user"
 
 # --- Helper Functions ---
 def extract_text_from_pdf(file_path: str) -> str:
@@ -301,13 +353,20 @@ def s3_key_for_document(file_id: str, file_name: str) -> str:
 def upload_pdf_to_storage(file_id: str, file_name: str, content: bytes) -> Optional[str]:
     if s3_client is None or not S3_BUCKET_NAME:
         return None
-    object_key = s3_key_for_document(file_id, file_name)
-    s3_client.put_object(Bucket=S3_BUCKET_NAME, Key=object_key, Body=content, ContentType="application/pdf")
-    return object_key
+    try:
+        object_key = s3_key_for_document(file_id, file_name)
+        s3_client.put_object(Bucket=S3_BUCKET_NAME, Key=object_key, Body=content, ContentType="application/pdf")
+        return object_key
+    except Exception as e:
+        logger.warning(f"Optional S3 backup upload failed (continuing ingestion): {e}")
+        return None
 
 def delete_pdf_from_storage(object_key: Optional[str]) -> None:
     if object_key and s3_client is not None and S3_BUCKET_NAME:
-        s3_client.delete_object(Bucket=S3_BUCKET_NAME, Key=object_key)
+        try:
+            s3_client.delete_object(Bucket=S3_BUCKET_NAME, Key=object_key)
+        except Exception as e:
+            logger.warning(f"Optional S3 delete failed: {e}")
 
 def tokenize(text):
     """Tokenize text for BM25"""
@@ -327,12 +386,22 @@ def rebuild_bm25():
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """Health check endpoint"""
+    total_docs = 0
+    total_chunks = 0
+    try:
+        col_info = qdrant.get_collection(COLLECTION_NAME)
+        total_chunks = col_info.points_count or 0
+        meta_info = qdrant.get_collection(METADATA_COLLECTION)
+        total_docs = meta_info.points_count or 0
+    except Exception:
+        pass
+
     return HealthResponse(
         status="healthy",
         timestamp=datetime.now(timezone.utc).isoformat(),
-        documents_indexed=len(doc_lookup),
+        documents_indexed=total_docs,
         model_status="ready",
-        total_chunks=len(documents_list),
+        total_chunks=total_chunks,
         qdrant_mode=QDRANT_MODE
     )
 
@@ -341,10 +410,11 @@ async def ingest_document(
     file: UploadFile = File(...),
     chunk_strategy: Optional[str] = Form("recursive"),
     chunk_size: Optional[int] = Form(600),
-    chunk_overlap: Optional[int] = Form(100)
+    chunk_overlap: Optional[int] = Form(100),
+    user_id: str = Depends(get_current_user_id)
 ):
-    """Ingest PDF document - chunks persist"""
-    if not file.filename.endswith('.pdf'):
+    """Ingest PDF document - chunks persist per user"""
+    if not file.filename.lower().endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
 
     # Validate chunking params
@@ -385,42 +455,63 @@ async def ingest_document(
         if not chunks:
             raise HTTPException(status_code=400, detail="No chunks created")
 
-        chunk_count = 0
-        for chunk_idx, chunk_text in enumerate(chunks):
-            doc_entry = {
-                "file_id": file_id,
-                "file_name": file.filename,
-                "text": chunk_text,
-                "chunk_index": chunk_idx,
-                "upload_time": datetime.now(timezone.utc).isoformat()
-            }
-            documents_list.append(doc_entry)
+        # Batch vectorization across all chunks simultaneously (high efficiency, low CPU time)
+        embeddings = embedder.encode(chunks, batch_size=32, convert_to_numpy=True, show_progress_bar=False)
 
-            embedding = embedder.encode(chunk_text, convert_to_numpy=True)
-            qdrant.upsert(
-                collection_name=COLLECTION_NAME,
-                points=[PointStruct(
-                    id=len(documents_list) - 1,
+        upload_time_str = datetime.now(timezone.utc).isoformat()
+        qdrant_points = []
+        for chunk_idx, (chunk_text, embedding) in enumerate(zip(chunks, embeddings)):
+            chunk_point_id = str(uuid.uuid4())
+            qdrant_points.append(
+                PointStruct(
+                    id=chunk_point_id,
                     vector=embedding.tolist(),
                     payload={
+                        "user_id": user_id,
                         "file_id": file_id,
                         "file_name": file.filename,
                         "text": chunk_text,
-                        "chunk_index": chunk_idx
+                        "chunk_index": chunk_idx,
+                        "upload_time": upload_time_str,
                     }
-                )]
+                )
             )
-            chunk_count += 1
 
-        doc_lookup[file_id] = {
+        # Single batch upsert to Qdrant vector store
+        qdrant.upsert(
+            collection_name=COLLECTION_NAME,
+            points=qdrant_points
+        )
+
+        # Store document catalog record in metadata collection
+        meta_point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{user_id}_{file_id}"))
+        qdrant.upsert(
+            collection_name=METADATA_COLLECTION,
+            points=[
+                PointStruct(
+                    id=meta_point_id,
+                    vector=[0.0],
+                    payload={
+                        "user_id": user_id,
+                        "file_id": file_id,
+                        "file_name": file.filename,
+                        "chunks_count": len(chunks),
+                        "upload_time": upload_time_str,
+                        "storage_key": storage_key,
+                    }
+                )
+            ]
+        )
+
+        # In-memory fast cache update
+        if user_id not in user_doc_lookups:
+            user_doc_lookups[user_id] = {}
+        user_doc_lookups[user_id][file_id] = {
             "name": file.filename,
-            "chunks": chunk_count,
-            "upload_time": datetime.now(timezone.utc).isoformat(),
+            "chunks": len(chunks),
+            "upload_time": upload_time_str,
             "storage_key": storage_key,
         }
-
-        rebuild_bm25()
-        save_state()
 
         try:
             os.remove(temp_path)
@@ -428,11 +519,11 @@ async def ingest_document(
             pass
 
         processing_time = time.time() - start_time
-        logger.info(f"✓ Ingested {file.filename}: {chunk_count} chunks in {processing_time:.2f}s")
+        logger.info(f"✓ Ingested {file.filename} for user {user_id}: {len(chunks)} chunks in {processing_time:.2f}s")
 
         return IngestResponse(
-            message=f"Document ingested successfully. Added {chunk_count} chunks to knowledge base.",
-            chunks_created=chunk_count,
+            message=f"Document ingested successfully. Added {len(chunks)} chunks to knowledge base.",
+            chunks_created=len(chunks),
             file_name=file.filename,
             file_id=file_id,
             processing_time=processing_time,
@@ -448,8 +539,8 @@ async def ingest_document(
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
 
 @app.post("/ingest-from-url", response_model=IngestResponse)
-async def ingest_from_hosted_url(payload: HostedIngestRequest):
-    """Download an Anna-hosted upload and reuse the standard ingestion pipeline."""
+async def ingest_from_hosted_url(payload: HostedIngestRequest, user_id: str = Depends(get_current_user_id)):
+    """Download an Anna-hosted upload and reuse the standard ingestion pipeline scoped to user."""
     parsed = urlparse(payload.file_url)
     allowed_host = parsed.hostname == "r2.anna.partners" or (
         parsed.hostname is not None and parsed.hostname.endswith(".r2.cloudflarestorage.com")
@@ -475,6 +566,7 @@ async def ingest_from_hosted_url(payload: HostedIngestRequest):
             chunk_strategy=payload.chunk_strategy,
             chunk_size=payload.chunk_size,
             chunk_overlap=payload.chunk_overlap,
+            user_id=user_id
         )
     except HTTPException:
         raise
@@ -483,149 +575,188 @@ async def ingest_from_hosted_url(payload: HostedIngestRequest):
         raise HTTPException(status_code=502, detail="Unable to download the Anna-hosted PDF")
 
 @app.get("/documents", response_model=List[DocumentInfo])
-async def list_documents():
-    """List all ingested documents"""
-    return [
-        DocumentInfo(
-            file_id=fid,
-            file_name=info["name"],
-            chunks_count=info["chunks"],
-            upload_time=info["upload_time"]
+async def list_documents(user_id: str = Depends(get_current_user_id)):
+    """List all ingested documents for the authenticated user"""
+    try:
+        points, _ = qdrant.scroll(
+            collection_name=METADATA_COLLECTION,
+            scroll_filter=models.Filter(
+                must=[models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id))]
+            ),
+            limit=200,
+            with_payload=True,
+            with_vectors=False,
         )
-        for fid, info in doc_lookup.items()
-    ]
+        sorted_points = sorted(
+            points,
+            key=lambda p: (p.payload or {}).get("upload_time", ""),
+            reverse=True
+        )
+        return [
+            DocumentInfo(
+                file_id=p.payload.get("file_id", str(p.id)),
+                file_name=p.payload.get("file_name", "Document"),
+                chunks_count=p.payload.get("chunks_count", 0),
+                upload_time=p.payload.get("upload_time", "")
+            )
+            for p in sorted_points if p.payload
+        ]
+    except Exception as e:
+        logger.error(f"Error listing documents for user {user_id}: {e}")
+        cached = user_doc_lookups.get(user_id, {})
+        return [
+            DocumentInfo(
+                file_id=fid,
+                file_name=info["name"],
+                chunks_count=info["chunks"],
+                upload_time=info["upload_time"]
+            )
+            for fid, info in cached.items()
+        ]
 
 @app.delete("/documents/{file_id}", response_model=DeleteDocumentResponse)
-async def delete_document(file_id: str):
-    """Delete document and its chunks"""
-    if file_id not in doc_lookup:
-        raise HTTPException(status_code=404, detail="Document not found")
-
+async def delete_document(file_id: str, user_id: str = Depends(get_current_user_id)):
+    """Atomically delete document and its chunks for the specific user"""
     try:
-        global documents_list, bm25_index
-
-        file_name = doc_lookup[file_id]["name"]
-        storage_key = doc_lookup[file_id].get("storage_key")
-
-        original_count = len(documents_list)
-        documents_list = [doc for doc in documents_list if doc["file_id"] != file_id]
-        deleted_count = original_count - len(documents_list)
-
-        # Rebuild Qdrant
-        qdrant.recreate_collection(
-            collection_name=COLLECTION_NAME,
-            vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+        # Find document info first
+        points, _ = qdrant.scroll(
+            collection_name=METADATA_COLLECTION,
+            scroll_filter=models.Filter(
+                must=[
+                    models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id)),
+                    models.FieldCondition(key="file_id", match=models.MatchValue(value=file_id)),
+                ]
+            ),
+            limit=1,
+            with_payload=True,
+            with_vectors=False,
         )
 
-        for idx, doc in enumerate(documents_list):
-            embedding = embedder.encode(doc["text"], convert_to_numpy=True)
-            qdrant.upsert(
-                collection_name=COLLECTION_NAME,
-                points=[PointStruct(
-                    id=idx,
-                    vector=embedding.tolist(),
-                    payload={
-                        "file_id": doc["file_id"],
-                        "file_name": doc["file_name"],
-                        "text": doc["text"],
-                        "chunk_index": doc.get("chunk_index", 0)
-                    }
-                )]
-            )
+        file_name = "Unknown"
+        storage_key = None
+        chunks_count = 0
+        if points and points[0].payload:
+            file_name = points[0].payload.get("file_name", file_name)
+            storage_key = points[0].payload.get("storage_key")
+            chunks_count = points[0].payload.get("chunks_count", 0)
 
-        rebuild_bm25()
-        del doc_lookup[file_id]
+        # 1. Atomic deletion of chunk vectors matching user_id AND file_id
+        qdrant.delete(
+            collection_name=COLLECTION_NAME,
+            points_selector=models.FilterSelector(
+                filter=models.Filter(
+                    must=[
+                        models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id)),
+                        models.FieldCondition(key="file_id", match=models.MatchValue(value=file_id)),
+                    ]
+                )
+            ),
+        )
+
+        # 2. Atomic deletion of metadata record
+        qdrant.delete(
+            collection_name=METADATA_COLLECTION,
+            points_selector=models.FilterSelector(
+                filter=models.Filter(
+                    must=[
+                        models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id)),
+                        models.FieldCondition(key="file_id", match=models.MatchValue(value=file_id)),
+                    ]
+                )
+            ),
+        )
+
+        # 3. Clean up in-memory cache if present
+        if user_id in user_doc_lookups and file_id in user_doc_lookups[user_id]:
+            del user_doc_lookups[user_id][file_id]
+
+        # 4. Optional S3 cleanup
         delete_pdf_from_storage(storage_key)
-        save_state()
 
-        logger.info(f"✓ Deleted document {file_name}: {deleted_count} chunks removed")
-
+        logger.info(f"✓ Atomically deleted document {file_name} ({file_id}) for user {user_id}")
         return DeleteDocumentResponse(
-            message=f"Document deleted successfully",
+            message="Document deleted successfully",
             file_id=file_id,
             file_name=file_name,
-            chunks_deleted=deleted_count,
+            chunks_deleted=chunks_count,
         )
-
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Deletion error: {e}")
+        logger.error(f"Deletion error for {file_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Deletion failed: {str(e)}")
 
 @app.post("/query", response_model=QueryResponse)
-async def query_documents(request: QueryRequest):
-    """Query documents with hybrid search and superior answer generation"""
-    if not documents_list or not bm25_index:
-        raise HTTPException(status_code=400, detail="No documents indexed. Please upload a document first.")
-
+async def query_documents(request: QueryRequest, user_id: str = Depends(get_current_user_id)):
+    """Query documents with scoped vector search, keyword relevance, and grounded LLM synthesis"""
     start_time = time.time()
     conversation_id = request.conversation_id or str(uuid.uuid4())
 
     try:
-        # BM25 Search
-        tokenized_query = tokenize(request.query)
-        bm25_scores = bm25_index.get_scores(tokenized_query)
-        bm25_results = sorted(
-            enumerate(bm25_scores),
-            key=lambda x: x[1],
-            reverse=True
-        )[:request.top_k]
+        # 1. Vector Search strictly scoped to user_id
+        query_vector = embedder.encode(request.query, convert_to_numpy=True).tolist()
+        user_filter = models.Filter(
+            must=[models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id))]
+        )
 
-        # Vector Search
-        query_vector = embedder.encode(request.query, convert_to_numpy=True)
         search_response = qdrant.query_points(
             collection_name=COLLECTION_NAME,
-            query=query_vector.tolist(),
-            limit=request.top_k,
+            query=query_vector,
+            query_filter=user_filter,
+            limit=max(request.top_k * 3, 10),
+            with_payload=True,
         )
-        vector_results = search_response.points
+        vector_points = search_response.points
 
-        # Reciprocal Rank Fusion (RRF)
-        rrf_scores = {}
-
-        for rank, (idx, bm25_score) in enumerate(bm25_results, 1):
-            if idx not in rrf_scores:
-                rrf_scores[idx] = 0
-            rrf_scores[idx] += 1 / (60 + rank)
-
-        for rank, result in enumerate(vector_results, 1):
-            chunk_text = result.payload["text"]
-            idx = next(
-                (i for i, doc in enumerate(documents_list) if doc["text"] == chunk_text),
-                None
+        if not vector_points:
+            return QueryResponse(
+                answer="No relevant documents found in your workspace. Please upload a PDF document first.",
+                sources=[],
+                processing_time=time.time() - start_time,
+                model=os.getenv("LLM_MODEL", "openai/gpt-oss-120b"),
+                conversation_id=conversation_id,
             )
-            if idx is None:
-                continue
-            if idx not in rrf_scores:
-                rrf_scores[idx] = 0
-            rrf_scores[idx] += 1 / (60 + rank)
 
-        # Keep comparative answers grounded in every uploaded document.
-        ranked_indices = sorted(
-            rrf_scores.items(),
-            key=lambda item: item[1],
-            reverse=True
-        )
-        top_indices = [idx for idx, _ in ranked_indices[:request.top_k]]
-        selected_files = {documents_list[idx]["file_id"] for idx in top_indices}
-        for idx, _ in ranked_indices[request.top_k:]:
-            if len(selected_files) >= len(doc_lookup):
-                break
-            file_id = documents_list[idx]["file_id"]
-            if file_id not in selected_files:
-                top_indices.append(idx)
-                selected_files.add(file_id)
+        # 2. Hybrid Lexical Reranking (Reciprocal Rank Fusion)
+        query_tokens = set(tokenize(request.query))
+        vector_rank = {p.id: rank for rank, p in enumerate(vector_points, 1)}
 
-        final_results = []
-        for idx in top_indices:
-            if idx >= len(documents_list):
-                continue
-            doc = documents_list[idx]
-            final_results.append(SourceChunk(
-                text=doc["text"],
-                source=doc["file_name"]
-            ))
+        def lexical_overlap_score(point):
+            text = (point.payload or {}).get("text", "")
+            tokens = tokenize(text)
+            if not tokens:
+                return 0.0
+            overlap = sum(1 for t in tokens if t in query_tokens)
+            return overlap / ((len(tokens) + 1) ** 0.5)
+
+        lexical_sorted = sorted(vector_points, key=lexical_overlap_score, reverse=True)
+        lexical_rank = {p.id: rank for rank, p in enumerate(lexical_sorted, 1)}
+
+        point_by_id = {p.id: p for p in vector_points}
+        rrf_scores = {}
+        for pid in point_by_id:
+            vr = vector_rank.get(pid, 999)
+            lr = lexical_rank.get(pid, 999)
+            rrf_scores[pid] = (1.0 / (60.0 + vr)) + (1.0 / (60.0 + lr))
+
+        ranked_pids = sorted(rrf_scores.keys(), key=lambda pid: rrf_scores[pid], reverse=True)
+        top_points = [point_by_id[pid] for pid in ranked_pids[:request.top_k]]
+
+        # Ensure representation across multiple uploaded documents if present
+        selected_files = {(p.payload or {}).get("file_id") for p in top_points}
+        for pid in ranked_pids[request.top_k:]:
+            p = point_by_id[pid]
+            fid = (p.payload or {}).get("file_id")
+            if fid and fid not in selected_files:
+                top_points.append(p)
+                selected_files.add(fid)
+
+        final_results = [
+            SourceChunk(
+                text=(p.payload or {}).get("text", ""),
+                source=(p.payload or {}).get("file_name", "Document")
+            )
+            for p in top_points
+            if p.payload and p.payload.get("text")
+        ]
 
         # Build context for LLM
         context = "\n\n".join([
@@ -633,9 +764,18 @@ async def query_documents(request: QueryRequest):
             for res in final_results
         ])
 
-        # Build conversation context
+        # 3. Conversation Context (stateless from request or server cache)
         conversation_history = ""
-        if conversation_id in conversations:
+        if request.conversation_context:
+            for msg in request.conversation_context[-4:]:
+                role = msg.get("role", "")
+                content = msg.get("content") or msg.get("query") or msg.get("answer") or ""
+                if role == "user":
+                    conversation_history += f"Q: {content}\n"
+                elif role == "assistant":
+                    conversation_history += f"A: {content}\n"
+            conversation_history += "\n"
+        elif conversation_id in conversations:
             for msg in conversations[conversation_id][-4:]:
                 if msg.role == "user":
                     conversation_history += f"Q: {msg.query}\n"
@@ -731,23 +871,28 @@ Share platform specifications ONLY when explicitly asked or when user encounters
 
 **Version:** 5.0 (Anna OS App-compatible backend)
 """
+            fallback_required = False
+            user_prompt_payload = f"{conversation_history}Documents:\n{context}\n\nQuestion: {request.query}"
 
             try:
-                llm_model = os.getenv("LLM_MODEL", "openai/gpt-oss-120b")
+                llm_model = get_env_clean("LLM_MODEL", "openai/gpt-oss-120b")
                 response = groq_client.chat.completions.create(
                     model=llm_model,
                     messages=[
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": f"{conversation_history}Documents:\n{context}\n\nQuestion: {request.query}"}
+                        {"role": "user", "content": user_prompt_payload}
                     ],
                     temperature=0.5,
                     max_tokens=1000
                 )
                 answer = response.choices[0].message.content
             except Exception as e:
-                logger.error(f"LLM generation failed: {e}")
-                answer = "I found relevant information but could not generate a complete answer. Please review the sources provided."
+                logger.warning(f"Groq LLM generation error or rate-limit ({e}). Setting fallback flag for Anna LLM.")
+                fallback_required = True
+                answer = ""
         else:
+            fallback_required = False
+            user_prompt_payload = None
             answer = "Retrieval-only mode: sources returned without LLM generation."
 
         # Store message in PERSISTENT conversation
@@ -770,14 +915,17 @@ Share platform specifications ONLY when explicitly asked or when user encounters
         save_state()
 
         processing_time = time.time() - start_time
-        logger.info(f"✓ Query processed in {processing_time:.2f}s | Conversation: {conversation_id}")
+        logger.info(f"✓ Query processed in {processing_time:.2f}s | Conversation: {conversation_id} (fallback={fallback_required})")
 
         return QueryResponse(
             answer=answer,
             sources=final_results,
             processing_time=processing_time,
-            model=os.getenv("LLM_MODEL", "openai/gpt-oss-120b"),
-            conversation_id=conversation_id
+            model="anna-llm-fallback" if fallback_required else get_env_clean("LLM_MODEL", "openai/gpt-oss-120b"),
+            conversation_id=conversation_id,
+            fallback_required=fallback_required,
+            fallback_system_prompt=system_prompt if fallback_required else None,
+            fallback_user_prompt=user_prompt_payload if fallback_required else None
         )
 
     except HTTPException:
@@ -795,12 +943,32 @@ async def get_conversation(conversation_id: str):
     return conversations[conversation_id]
 
 @app.get("/stats")
-async def get_stats():
-    """Get system statistics"""
+async def get_stats(user_id: str = Depends(get_current_user_id)):
+    """Get system statistics scoped to user"""
+    total_docs = 0
+    total_chunks = 0
+    try:
+        points, _ = qdrant.scroll(
+            collection_name=METADATA_COLLECTION,
+            scroll_filter=models.Filter(
+                must=[models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id))]
+            ),
+            limit=200,
+            with_payload=True,
+            with_vectors=False,
+        )
+        total_docs = len(points)
+        total_chunks = sum((p.payload or {}).get("chunks_count", 0) for p in points if p.payload)
+    except Exception as e:
+        logger.warning(f"Error computing stats for user {user_id}: {e}")
+        cached = user_doc_lookups.get(user_id, {})
+        total_docs = len(cached)
+        total_chunks = sum(info.get("chunks", 0) for info in cached.values())
+
     return {
-        "total_documents": len(doc_lookup),
-        "total_chunks": len(documents_list),
-        "active_conversations": len(conversations),
+        "total_documents": total_docs,
+        "total_chunks": total_chunks,
+        "active_conversations": 1,
         "embedding_model": "all-MiniLM-L6-v2",
         "llm_model": os.getenv("LLM_MODEL", "openai/gpt-oss-120b"),
         "qdrant_mode": QDRANT_MODE

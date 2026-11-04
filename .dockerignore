@@ -10,3 +10,11 @@ venv/
 data/
 logs/
 .pytest_cache/
+.vscode/
+.anna/
+*.md
+script.sh
+docker-compose.yaml
+assets/
+
+env.yaml

@@ -1,9 +1,9 @@
 {
-  "name": "Anna Document Workspace",
+  "name": "DocuMind",
   "slug": "anna-document-workspace",
   "category": "productivity",
   "tagline": "Ask questions across your documents with grounded answers.",
   "description": "A local-first document workspace for uploading PDFs, hybrid retrieval, source-backed answers, and persistent conversations.",
-  "homepage": "https://anna.partners",
+  "homepage": "https://github.com/Parthsantoki2003/anna-ai-doc",
   "pricing_model": "free"
 }

@@ -3,16 +3,45 @@
         let conversationHistory = [];
         let documentsLoaded = [];
         let uploadInProgress = false;
-        let annaRuntime = null;
+        let selectedFile = null;
+        let anna = null;
+
+        function getUserId() {
+            let uid = null;
+            try {
+                uid = localStorage.getItem('anna_doc_user_id');
+            } catch (e) {}
+            if (!uid) {
+                if (anna && anna.user && anna.user.id) {
+                    uid = String(anna.user.id);
+                } else if (anna && anna.account && anna.account.id) {
+                    uid = String(anna.account.id);
+                } else {
+                    const rnd = (typeof crypto !== 'undefined' && crypto.randomUUID)
+                        ? crypto.randomUUID().replace(/-/g, '')
+                        : Math.random().toString(36).substring(2) + Date.now().toString(36);
+                    uid = 'usr_' + rnd;
+                }
+                try {
+                    localStorage.setItem('anna_doc_user_id', uid);
+                } catch (e) {}
+            }
+            return uid;
+        }
 
         async function initAnnaRuntime() {
             try {
-                if (typeof window !== 'undefined' && window.AnnaAppRuntime) {
-                    const result = await Promise.resolve(window.AnnaAppRuntime.connect?.());
-                    annaRuntime = result;
+                let Runtime = typeof window !== 'undefined' ? window.AnnaAppRuntime : null;
+                if (!Runtime) {
+                    const sdk = await import('/static/anna-apps/_sdk/latest/index.js');
+                    Runtime = sdk.AnnaAppRuntime || sdk.default;
+                }
+                if (Runtime && typeof Runtime.connect === 'function') {
+                    anna = await Runtime.connect();
+                    await anna.window.set_title({ title: 'DocuMind' }).catch(() => {});
                 }
             } catch (e) {
-                console.warn('Anna Runtime not available:', e);
+                console.warn('Anna Runtime not available (standalone mode):', e);
             }
         }
 
@@ -28,23 +57,54 @@
                 dropzone.addEventListener('dragleave', handleDragLeave);
                 dropzone.addEventListener('drop', handleDrop);
             }
+
+            // Delegated click handler for deleting documents
+            const docList = document.getElementById('documentsList');
+            if (docList) {
+                docList.addEventListener('click', (e) => {
+                    const btn = e.target.closest('[data-delete]');
+                    if (!btn) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const fid = btn.getAttribute('data-delete');
+                    const fname = btn.getAttribute('data-name') || 'Document';
+                    openDeleteModal(fid, fname);
+                });
+            }
+
+            // Delete modal controls
+            document.getElementById('cancelDeleteBtn')?.addEventListener('click', closeDeleteModal);
+            document.getElementById('confirmDeleteBtn')?.addEventListener('click', executeDelete);
+            document.getElementById('deleteModal')?.addEventListener('click', (e) => {
+                if (e.target.id === 'deleteModal') closeDeleteModal();
+            });
         }
 
         function handleFileSelect(event) {
             const file = event.target.files[0];
             if (file) {
-                document.getElementById('fileNameDisplay').textContent = `Selected ${file.name}`;
-                uploadFile(file);
+                if (!file.name.toLowerCase().endsWith('.pdf')) {
+                    showNotification('Only PDF files are supported', 'error');
+                    return;
+                }
+                selectedFile = file;
+                document.getElementById('fileNameDisplay').textContent = `Selected: ${file.name}`;
+                showNotification(`Selected ${file.name}. Click "Upload PDF" to proceed.`, 'info');
             }
         }
 
-        function uploadSelectedFile() {
+        function uploadSelectedFile(e) {
+            if (e) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
             const input = document.getElementById('fileInput');
-            const file = input.files && input.files[0];
+            const file = selectedFile || (input.files && input.files[0]);
             if (file) {
                 uploadFile(file);
             } else {
-                document.getElementById('fileInput').click();
+                showNotification('Please select a PDF document first', 'warning');
+                input.click();
             }
         }
 
@@ -65,13 +125,21 @@
             event.stopPropagation();
             this.classList.remove('bg-indigo-50', 'border-indigo-400');
             const files = event.dataTransfer.files;
-            if (files.length > 0) uploadFile(files[0]);
+            if (files.length > 0) {
+                const file = files[0];
+                if (!file.name.toLowerCase().endsWith('.pdf')) {
+                    showNotification('Only PDF files are supported', 'error');
+                    return;
+                }
+                selectedFile = file;
+                document.getElementById('fileNameDisplay').textContent = `Selected: ${file.name}`;
+                showNotification(`Selected ${file.name}. Click "Upload PDF" to proceed.`, 'info');
+            }
         }
 
         async function annaHostUpload(file) {
+            if (!anna) return null;
             try {
-                if (!annaRuntime) throw new Error('Anna Runtime not available');
-                
                 if (file.size <= 8 * 1024 * 1024) {
                     const bytes = new Uint8Array(await file.arrayBuffer());
                     let binary = '';
@@ -79,35 +147,47 @@
                     for (let i = 0; i < bytes.length; i += step) {
                         binary += String.fromCharCode(...bytes.subarray(i, i + step));
                     }
-                    const response = await annaRuntime.upload?.inline?.({
-                        bytes_b64: btoa(binary),
+                    const b64 = btoa(binary);
+                    const response = await anna.upload.inline({
+                        filename: file.name,
+                        mime_type: 'application/pdf',
+                        content_b64: b64,
+                        bytes_b64: b64,
                         mime: 'application/pdf',
-                        purpose: 'document-ingestion',
-                        filename: file.name
+                        purpose: 'document-ingestion'
                     });
-                    if (!response?.ok) throw new Error(response?.error?.message || 'Upload failed');
-                    return response.result.url;
+                    const payload = response?.result ?? response;
+                    return payload?.url || payload?.get_url || payload?.download_url || null;
                 }
 
-                const negotiated = await annaRuntime.upload?.negotiate?.({
+                const negotiated = await anna.upload.negotiate({
+                    filename: file.name,
+                    mime_type: 'application/pdf',
                     mime: 'application/pdf',
                     purpose: 'document-ingestion',
                     size_bytes: file.size
                 });
-                if (!negotiated?.ok) throw new Error('Upload negotiation failed');
-                
-                const uploadResponse = await fetch(negotiated.result.upload_url, {
+                const negPayload = negotiated?.result ?? negotiated;
+                const uploadUrl = negPayload?.presigned_url || negPayload?.upload_url;
+                const r2Key = negPayload?.r2_key || negPayload?.file_ref;
+                if (!uploadUrl || !r2Key) return null;
+
+                const uploadResponse = await fetch(uploadUrl, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/pdf' },
                     body: file
                 });
-                if (!uploadResponse.ok) throw new Error('File upload failed');
-                
-                const confirmed = await annaRuntime.upload?.confirm?.({ file_ref: negotiated.result.file_ref });
-                if (!confirmed?.ok) throw new Error('Upload confirmation failed');
-                return confirmed.result.url;
+                if (!uploadResponse.ok) return null;
+
+                const confirmed = await anna.upload.confirm({
+                    r2_key: r2Key,
+                    file_ref: r2Key
+                });
+                const confPayload = confirmed?.result ?? confirmed;
+                return confPayload?.url || confPayload?.get_url || confPayload?.download_url || null;
             } catch (error) {
-                throw new Error(`Anna upload failed: ${error.message}`);
+                console.warn('Anna host upload fallback to direct ingest:', error);
+                return null;
             }
         }
 
@@ -118,23 +198,46 @@
                 return;
             }
             uploadInProgress = true;
+            const uploadBtn = document.getElementById('uploadActionBtn');
+            if (uploadBtn) uploadBtn.disabled = true;
 
             document.getElementById('fileProgress').classList.remove('hidden');
             document.getElementById('fileNameDisplay').textContent = `Uploading ${file.name}...`;
 
             try {
                 const hostedUrl = await annaHostUpload(file);
-                const response = await fetch(`${API_BASE}/ingest-from-url`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        file_url: hostedUrl,
-                        file_name: file.name,
-                        chunk_strategy: 'recursive',
-                        chunk_size: 500,
-                        chunk_overlap: 50
-                    })
-                });
+                let response;
+
+                if (hostedUrl && /^https?:\/\//i.test(hostedUrl)) {
+                    response = await fetch(`${API_BASE}/ingest-from-url`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-User-Id': getUserId()
+                        },
+                        body: JSON.stringify({
+                            file_url: hostedUrl,
+                            file_name: file.name,
+                            chunk_strategy: 'recursive',
+                            chunk_size: 500,
+                            chunk_overlap: 50
+                        })
+                    });
+                } else {
+                    const formData = new FormData();
+                    formData.append('file', file);
+                    formData.append('chunk_strategy', 'recursive');
+                    formData.append('chunk_size', 500);
+                    formData.append('chunk_overlap', 50);
+
+                    response = await fetch(`${API_BASE}/ingest`, {
+                        method: 'POST',
+                        headers: {
+                            'X-User-Id': getUserId()
+                        },
+                        body: formData
+                    });
+                }
 
                 if (!response.ok) {
                     const error = await response.json().catch(() => ({}));
@@ -154,6 +257,7 @@
                 ];
                 renderDocuments(documentsLoaded);
                 
+                selectedFile = null;
                 document.getElementById('fileNameDisplay').textContent = 'Choose a PDF or drag it here';
                 document.getElementById('fileInput').value = '';
                 document.getElementById('fileProgress').classList.add('hidden');
@@ -165,12 +269,17 @@
                 document.getElementById('fileProgress').classList.add('hidden');
             } finally {
                 uploadInProgress = false;
+                if (uploadBtn) uploadBtn.disabled = false;
             }
         }
 
         async function loadDocuments() {
             try {
-                const response = await fetch(`${API_BASE}/documents`);
+                const response = await fetch(`${API_BASE}/documents`, {
+                    headers: {
+                        'X-User-Id': getUserId()
+                    }
+                });
                 if (!response.ok) throw new Error(`Documents request failed (${response.status})`);
                 const documents = await response.json();
                 documentsLoaded = documents;
@@ -180,60 +289,113 @@
             }
         }
 
+        let pendingDeleteId = null;
+        let pendingDeleteName = null;
+
+        function openDeleteModal(fileId, fileName) {
+            pendingDeleteId = fileId;
+            pendingDeleteName = fileName;
+            const modal = document.getElementById('deleteModal');
+            const textEl = document.getElementById('deleteModalText');
+            if (textEl) {
+                textEl.textContent = `Are you sure you want to delete "${fileName}"? This will remove it from your workspace and clear its search index.`;
+            }
+            if (modal) modal.classList.remove('hidden');
+        }
+
+        function closeDeleteModal() {
+            pendingDeleteId = null;
+            pendingDeleteName = null;
+            const modal = document.getElementById('deleteModal');
+            if (modal) modal.classList.add('hidden');
+            const confirmBtn = document.getElementById('confirmDeleteBtn');
+            if (confirmBtn) {
+                confirmBtn.disabled = false;
+                confirmBtn.innerHTML = '<i class="fa-solid fa-trash-alt pointer-events-none"></i><span>Delete</span>';
+            }
+        }
+
+        async function executeDelete() {
+            if (!pendingDeleteId) return;
+            const fileId = pendingDeleteId;
+            const fileName = pendingDeleteName || 'Document';
+            const confirmBtn = document.getElementById('confirmDeleteBtn');
+            if (confirmBtn) {
+                confirmBtn.disabled = true;
+                confirmBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin pointer-events-none"></i><span>Deleting...</span>';
+            }
+
+            try {
+                const response = await fetch(`${API_BASE}/documents/${fileId}`, {
+                    method: 'DELETE',
+                    headers: {
+                        'X-User-Id': getUserId()
+                    }
+                });
+
+                if (!response.ok) {
+                    const err = await response.json().catch(() => ({}));
+                    throw new Error(err.detail || 'Delete failed');
+                }
+
+                showNotification(`Document "${fileName}" deleted`, 'success');
+                documentsLoaded = documentsLoaded.filter(doc => doc.file_id !== fileId);
+                renderDocuments(documentsLoaded);
+                enableQueryInput();
+                loadStats();
+                await loadDocuments();
+            } catch (error) {
+                console.error('Delete failed:', error);
+                showNotification(`Delete failed: ${error.message}`, 'error');
+            } finally {
+                closeDeleteModal();
+            }
+        }
+
         function renderDocuments(documents) {
             const list = document.getElementById('documentsList');
+            if (!list) return;
+
+            const badge = document.getElementById('docCountBadge');
+            if (badge) badge.textContent = documents.length;
+
             if (documents.length === 0) {
                 list.innerHTML = '<p class="text-sm text-slate-500 text-center py-4">No documents uploaded yet</p>';
                 return;
             }
 
             list.innerHTML = documents.map(doc => `
-                <div class="document-card bg-slate-50 rounded-lg p-3 flex items-start justify-between hover:bg-slate-100 transition">
-                    <div class="flex-1">
-                        <p class="text-sm font-semibold text-slate-700 truncate" title="${escapeHtml(doc.file_name)}"><i class="fa-solid fa-file-pdf text-red-500"></i> ${escapeHtml(doc.file_name)}</p>
+                <div class="document-card bg-slate-50 rounded-lg p-3 flex items-start justify-between hover:bg-slate-100 transition border border-slate-200">
+                    <div class="flex-1 min-w-0 pr-2">
+                        <p class="text-sm font-semibold text-slate-700 truncate" title="${escapeHtml(doc.file_name)}">
+                            <i class="fa-solid fa-file-pdf text-red-500 mr-1.5"></i>${escapeHtml(doc.file_name)}
+                        </p>
                         <p class="text-xs text-slate-500 mt-1">${doc.chunks_count} indexed chunks</p>
                     </div>
-                    <button type="button" class="text-red-500 hover:text-red-700 hover:bg-red-50 p-2 rounded transition" title="Delete document" data-delete="${escapeHtml(doc.file_id)}" data-name="${escapeHtml(doc.file_name)}">
-                        <i class="fa-solid fa-trash-alt"></i>
+                    <button type="button" class="delete-doc-btn flex-shrink-0 text-red-500 hover:text-red-700 hover:bg-red-50 p-2 rounded transition" title="Delete document" data-delete="${escapeHtml(doc.file_id)}" data-name="${escapeHtml(doc.file_name)}">
+                        <i class="fa-solid fa-trash-alt pointer-events-none"></i>
                     </button>
                 </div>
             `).join('');
-
-            list.querySelectorAll('[data-delete]').forEach(btn => {
-                btn.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    deleteDocument(btn.dataset.delete, btn.dataset.name);
-                });
-            });
-        }
-
-        async function deleteDocument(fileId, fileName) {
-            if (!confirm(`Delete "${fileName}"? This will remove it from the knowledge base.`)) return;
-
-            try {
-                const response = await fetch(`${API_BASE}/documents/${fileId}`, {
-                    method: 'DELETE'
-                });
-
-                if (!response.ok) throw new Error('Delete failed');
-
-                showNotification(`Document "${fileName}" deleted`, 'success');
-                loadDocuments();
-                loadStats();
-            } catch (error) {
-                showNotification(`Delete failed: ${error.message}`, 'error');
-            }
         }
 
         async function loadStats() {
             try {
-                const response = await fetch(`${API_BASE}/stats`);
-                if (!response.ok) throw new Error(`Stats request failed (${response.status})`);
+                const response = await fetch(`${API_BASE}/stats`, {
+                    headers: {
+                        'X-User-Id': getUserId()
+                    }
+                });
+                if (!response.ok) return;
                 const stats = await response.json();
-                document.getElementById('statsChunks').textContent = stats.total_chunks;
-                document.getElementById('statsDocuments').textContent = stats.total_documents;
+                const chunksEl = document.getElementById('statsChunks');
+                if (chunksEl) chunksEl.textContent = stats.total_chunks ?? 0;
+                const docsEl = document.getElementById('statsDocuments');
+                if (docsEl) docsEl.textContent = stats.total_documents ?? 0;
+                const badge = document.getElementById('docCountBadge');
+                if (badge && stats.total_documents !== undefined) badge.textContent = stats.total_documents;
             } catch (error) {
-                console.error('Failed to load stats:', error);
+                console.warn('Stats fetch skipped:', error);
             }
         }
 
@@ -246,7 +408,10 @@
                     <p class="text-slate-500 text-lg">Upload a document and ask questions</p>
                 </div>
             `;
-            document.getElementById('conversationHistory').innerHTML = '<p class="text-sm text-slate-500 text-center py-4">No conversation yet</p>';
+            const convHistory = document.getElementById('conversationHistory');
+            if (convHistory) {
+                convHistory.innerHTML = '<p class="text-sm text-slate-500 text-center py-4">No conversation yet</p>';
+            }
             enableQueryInput();
         }
 
@@ -270,12 +435,15 @@
             try {
                 const response = await fetch(`${API_BASE}/query`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-User-Id': getUserId()
+                    },
                     body: JSON.stringify({
                         query,
                         top_k: 5,
                         generate_answer: true,
-                        conversation_context: conversationHistory
+                        conversation_context: conversationHistory.slice(-6)
                     })
                 });
 
@@ -285,6 +453,35 @@
                 
                 document.getElementById(loadingId)?.remove();
 
+                let answer = data.answer;
+                if (data.fallback_required) {
+                    if (anna && anna.llm && typeof anna.llm.complete === 'function') {
+                        try {
+                            showNotification('Groq limit reached: generating answer via Anna LLM failover...', 'info');
+                            const fallbackRes = await anna.llm.complete({
+                                systemPrompt: data.fallback_system_prompt,
+                                messages: [
+                                    { role: 'user', content: data.fallback_user_prompt }
+                                ]
+                            });
+                            answer = fallbackRes?.text ||
+                                     (typeof fallbackRes?.content === 'string' ? fallbackRes.content : null) ||
+                                     (Array.isArray(fallbackRes?.content) && fallbackRes.content[0]?.text) ||
+                                     fallbackRes?.result ||
+                                     fallbackRes?.message?.content ||
+                                     (typeof fallbackRes === 'string' ? fallbackRes : null);
+
+                            if (!answer) throw new Error("Empty response from Anna LLM");
+                            showNotification("Answer generated via Anna LLM failover", "success");
+                        } catch (fallbackErr) {
+                            console.warn("Anna LLM fallback failed:", fallbackErr);
+                            answer = "I retrieved the relevant source documents below, but could not complete the AI summary due to temporary provider limits. Please review the cited excerpts.";
+                        }
+                    } else {
+                        answer = "Primary LLM limit reached and Anna platform LLM is not available in standalone mode. Please review the relevant sources below.";
+                    }
+                }
+
                 conversationHistory.push({
                     role: 'user',
                     query,
@@ -293,14 +490,14 @@
 
                 conversationHistory.push({
                     role: 'assistant',
-                    answer: data.answer,
+                    answer: answer,
                     sources: data.sources,
                     timestamp: new Date().toISOString()
                 });
 
                 currentConversationId = data.conversation_id;
 
-                addAssistantMessage(data.answer, data.sources, data.processing_time);
+                addAssistantMessage(answer, data.sources, data.processing_time);
                 updateConversationHistory();
 
             } catch (error) {
@@ -373,6 +570,7 @@
 
         function updateConversationHistory() {
             const container = document.getElementById('conversationHistory');
+            if (!container) return;
             
             if (conversationHistory.length === 0) {
                 container.innerHTML = '<p class="text-sm text-slate-500 text-center py-4">No conversation yet</p>';
