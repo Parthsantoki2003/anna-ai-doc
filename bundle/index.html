@@ -28,24 +28,108 @@
         * {
             box-sizing: border-box;
             scrollbar-width: thin;
-            scrollbar-color: #cbd5e1 #f8fafc;
+            scrollbar-color: #94a3b8 #f1f5f9;
         }
-        *::-webkit-scrollbar { width: 6px; height: 6px; }
+        *::-webkit-scrollbar { width: 8px; height: 8px; }
         *::-webkit-scrollbar-track { background: #f8fafc; }
         *::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 9999px; }
         *::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
 
-        html, body {
+        /* --- Scrolling & Viewport Engine --- */
+        html {
             width: 100%;
             height: 100%;
             margin: 0;
             padding: 0;
             overflow: hidden;
+        }
+
+        body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            display: flex;
+            flex-direction: row;
             background-color: #f1f5f9;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
             color: #0f172a;
-            display: flex;
             font-size: 14px;
+        }
+
+        aside {
+            width: var(--sidebar-width);
+            min-width: var(--sidebar-width);
+            max-width: var(--sidebar-width);
+            background: #ffffff;
+            border-right: 1px solid #e2e8f0;
+            height: 100%;
+            max-height: 100%;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+            z-index: 10;
+            overflow: hidden;
+        }
+
+        .sidebar-scroll-area {
+            flex: 1 1 0%;
+            min-height: 0;
+            overflow-y: auto !important;
+            overflow-x: hidden !important;
+            overscroll-behavior: contain;
+            -webkit-overflow-scrolling: touch;
+            touch-action: pan-y;
+            display: flex;
+            flex-direction: column;
+            padding: 1rem;
+            gap: 1rem;
+        }
+
+        main {
+            flex: 1 1 0%;
+            min-width: 0;
+            min-height: 0;
+            height: 100%;
+            max-height: 100%;
+            display: flex;
+            flex-direction: column;
+            background: #ffffff;
+            overflow: hidden;
+        }
+
+        #chatView {
+            flex: 1 1 0%;
+            min-height: 0;
+            height: 100%;
+            max-height: 100%;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        #messagesContainer {
+            flex: 1 1 0%;
+            min-height: 0;
+            overflow-y: auto !important;
+            overflow-x: hidden !important;
+            overscroll-behavior: contain;
+            -webkit-overflow-scrolling: touch;
+            touch-action: pan-y;
+        }
+
+        #summaryView, #risksView, #extractView, #compareView, #quizView {
+            flex: 1 1 0%;
+            min-height: 0;
+            height: 100%;
+            max-height: 100%;
+            overflow-y: auto !important;
+            overflow-x: hidden !important;
+            overscroll-behavior: contain;
+            -webkit-overflow-scrolling: touch;
+            touch-action: pan-y;
         }
 
         /* --- Self-Contained Flexbox & Layout Utilities --- */
@@ -71,8 +155,8 @@
 
         .w-full { width: 100%; }
         .h-full { height: 100%; }
-        .min-w-0 { min-width: 0; }
-        .min-h-0 { min-h: 0; }
+        .min-w-0 { min-width: 0 !important; }
+        .min-h-0 { min-height: 0 !important; }
         .max-w-xs { max-width: 20rem; }
         .max-w-sm { max-width: 24rem; }
         .max-w-md { max-width: 28rem; }
@@ -253,28 +337,7 @@
             .md\:grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
         }
 
-        /* --- App Specific Components --- */
-        aside {
-            width: var(--sidebar-width);
-            min-width: var(--sidebar-width);
-            background: #ffffff;
-            border-right: 1px solid #e2e8f0;
-            height: 100vh;
-            display: flex;
-            flex-direction: column;
-            flex-shrink: 0;
-            z-index: 10;
-        }
 
-        main {
-            flex: 1 1 0%;
-            min-width: 0;
-            height: 100vh;
-            display: flex;
-            flex-direction: column;
-            background: #ffffff;
-            overflow: hidden;
-        }
 
         .dropzone-container {
             border: 2px dashed #c7d2fe;
@@ -473,7 +536,7 @@
     <!-- LEFT SIDEBAR -->
     <aside>
         <!-- App Brand Header -->
-        <div class="p-5 bg-indigo-600 text-white flex items-center justify-between shadow-sm" style="background: linear-gradient(135deg, #4f46e5 0%, #3730a3 100%);">
+        <div class="p-5 bg-indigo-600 text-white flex items-center justify-between shadow-sm flex-shrink-0" style="background: linear-gradient(135deg, #4f46e5 0%, #3730a3 100%);">
             <div class="flex items-center gap-3">
                 <div class="rounded-xl flex items-center justify-center text-white" style="width: 2.5rem; height: 2.5rem; background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.25);">
                     <svg class="svg-icon svg-icon-lg" viewBox="0 0 24 24"><path d="M12 2a4 4 0 0 0-4 4v1a4 4 0 0 0-2 3.46 4 4 0 0 0 1 3.54 4 4 0 0 0-1 3 4 4 0 0 0 4 4h4a4 4 0 0 0 4-4 4 4 0 0 0-1-3 4 4 0 0 0 1-3.54A4 4 0 0 0 16 7V6a4 4 0 0 0-4-4Z"></path></svg>
@@ -487,7 +550,7 @@
         </div>
 
         <!-- Sidebar Body -->
-        <div class="flex-1 overflow-y-auto flex flex-col p-4 gap-4">
+        <div class="sidebar-scroll-area">
             
             <!-- Upload Ingestion Card -->
             <div>
@@ -523,7 +586,7 @@
             </div>
 
             <!-- Uploaded Documents Knowledge Base -->
-            <div class="flex-1 flex flex-col min-h-0 pt-2 border-t border-slate-100">
+            <div class="flex flex-col pt-2 border-t border-slate-100">
                 <div class="flex items-center justify-between mb-2">
                     <h2 class="text-[11px] uppercase font-bold tracking-wider text-slate-500 flex items-center gap-1.5" style="margin: 0;">
                         <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"></path></svg>
@@ -532,7 +595,7 @@
                     <span id="docCountBadge" class="text-[11px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-600 border border-indigo-100">0</span>
                 </div>
                 
-                <div id="documentsList" class="flex-1 overflow-y-auto space-y-1.5 pr-1">
+                <div id="documentsList" class="space-y-1.5 pr-1">
                     <div class="text-center py-8 text-slate-400">
                         <svg class="svg-icon svg-icon-xl" style="color: #cbd5e1; margin: 0 auto 0.5rem auto;" viewBox="0 0 24 24"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
                         <p class="text-xs" style="margin: 0;">No documents uploaded</p>
@@ -543,7 +606,7 @@
         </div>
 
         <!-- Sidebar Bottom Action -->
-        <div class="p-4 border-t border-slate-100 bg-slate-50">
+        <div class="p-4 border-t border-slate-100 bg-slate-50 flex-shrink-0">
             <button id="newConversationBtn" class="w-full btn-secondary py-2.5 px-3 text-xs flex items-center justify-center gap-2">
                 <svg class="svg-icon svg-icon-sm" style="color: #4f46e5;" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
                 <span>New Conversation</span>
