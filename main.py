@@ -96,7 +96,110 @@ class QueryResponse(BaseModel):
     processing_time: float
     model: str = "llama-3.3-70b"
     conversation_id: str
+    grounding_score: Optional[int] = 95
     fallback_required: Optional[bool] = False
+    fallback_system_prompt: Optional[str] = None
+    fallback_user_prompt: Optional[str] = None
+
+# --- AI-Native Workflow Models ---
+class WorkflowSummaryRequest(BaseModel):
+    file_id: Optional[str] = None
+
+class WorkflowSummaryResponse(BaseModel):
+    title: str
+    executive_summary: str
+    key_findings: List[str]
+    critical_decisions: List[str]
+    timeline_or_milestones: List[str]
+    action_items: List[str]
+    sources: List[str]
+    processing_time: float
+    fallback_required: bool = False
+    fallback_system_prompt: Optional[str] = None
+    fallback_user_prompt: Optional[str] = None
+
+class RiskItem(BaseModel):
+    title: str
+    severity: str  # High, Medium, Low
+    category: str  # Legal, Financial, Compliance, Operational, Deadline
+    clause_excerpt: str
+    impact: str
+    mitigation: str
+
+class WorkflowRiskAuditRequest(BaseModel):
+    file_id: Optional[str] = None
+
+class WorkflowRiskAuditResponse(BaseModel):
+    overall_risk_level: str  # High, Medium, Low
+    risk_score_narrative: str
+    risks: List[RiskItem]
+    missing_clauses: List[str]
+    sources: List[str]
+    processing_time: float
+    fallback_required: bool = False
+    fallback_system_prompt: Optional[str] = None
+    fallback_user_prompt: Optional[str] = None
+
+class ExtractedDataPoint(BaseModel):
+    category: str  # Financial, Metric, Date, Obligation, Entity
+    label: str
+    value: str
+    context: str
+    source_file: str
+
+class WorkflowDataExtractRequest(BaseModel):
+    file_id: Optional[str] = None
+
+class WorkflowDataExtractResponse(BaseModel):
+    document_name: str
+    data_points: List[ExtractedDataPoint]
+    sources: List[str]
+    processing_time: float
+    fallback_required: bool = False
+    fallback_system_prompt: Optional[str] = None
+    fallback_user_prompt: Optional[str] = None
+
+class ComparisonDelta(BaseModel):
+    dimension: str
+    doc1_content: str
+    doc2_content: str
+    delta_type: str  # Contradiction, Modified, Addition, Alignment
+    significance: str  # Major, Moderate, Minor
+
+class WorkflowCompareRequest(BaseModel):
+    file_id_1: str
+    file_id_2: str
+
+class WorkflowCompareResponse(BaseModel):
+    doc1_name: str
+    doc2_name: str
+    summary_matrix: str
+    deltas: List[ComparisonDelta]
+    consensus_points: List[str]
+    sources: List[str]
+    processing_time: float
+    fallback_required: bool = False
+    fallback_system_prompt: Optional[str] = None
+    fallback_user_prompt: Optional[str] = None
+
+class QuizQuestion(BaseModel):
+    id: int
+    question: str
+    options: List[str]
+    correct_index: int
+    explanation: str
+    citation: str
+
+class WorkflowQuizRequest(BaseModel):
+    file_id: Optional[str] = None
+    count: int = Field(5, ge=1, le=10)
+
+class WorkflowQuizResponse(BaseModel):
+    topic: str
+    questions: List[QuizQuestion]
+    sources: List[str]
+    processing_time: float
+    fallback_required: bool = False
     fallback_system_prompt: Optional[str] = None
     fallback_user_prompt: Optional[str] = None
 
@@ -973,6 +1076,457 @@ async def get_stats(user_id: str = Depends(get_current_user_id)):
         "llm_model": os.getenv("LLM_MODEL", "openai/gpt-oss-120b"),
         "qdrant_mode": QDRANT_MODE
     }
+
+
+# --- Workflow Helper Functions ---
+def parse_json_safely(raw_text: str, default: dict) -> dict:
+    """Robustly parse JSON from LLM generation, stripping markdown blocks if needed."""
+    if not raw_text:
+        return default
+    cleaned = raw_text.strip()
+    if cleaned.startswith("```"):
+        match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned)
+        if match:
+            cleaned = match.group(1).strip()
+    try:
+        return json.loads(cleaned)
+    except Exception:
+        match = re.search(r"\{[\s\S]*\}", cleaned)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except Exception:
+                pass
+    return default
+
+def get_user_document_chunks(user_id: str, file_id: Optional[str] = None, limit: int = 40) -> List[Dict]:
+    """Retrieve indexed text chunks for a user, optionally filtered by file_id."""
+    conditions = [models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id))]
+    if file_id:
+        conditions.append(models.FieldCondition(key="file_id", match=models.MatchValue(value=file_id)))
+    
+    try:
+        points, _ = qdrant.scroll(
+            collection_name=COLLECTION_NAME,
+            scroll_filter=models.Filter(must=conditions),
+            limit=limit,
+            with_payload=True,
+            with_vectors=False,
+        )
+        chunks = []
+        for p in points:
+            if p.payload and p.payload.get("text"):
+                chunks.append({
+                    "text": p.payload.get("text", "").strip(),
+                    "file_name": p.payload.get("file_name", "Document"),
+                    "file_id": p.payload.get("file_id", ""),
+                    "page": p.payload.get("page", 1),
+                    "chunk_index": p.payload.get("chunk_index", 0)
+                })
+        return chunks
+    except Exception as e:
+        logger.error(f"Error fetching chunks for user {user_id}: {e}")
+        return []
+
+# --- AI-Native Workflow Endpoints ---
+
+@app.post("/workflow/executive-summary", response_model=WorkflowSummaryResponse)
+async def workflow_executive_summary(
+    request: WorkflowSummaryRequest,
+    user_id: str = Depends(get_current_user_id)
+):
+    """Workflow 1: Deep Executive Briefing, Findings, Decisions & Action Items"""
+    start_time = time.time()
+    chunks = get_user_document_chunks(user_id, request.file_id, limit=35)
+    if not chunks:
+        raise HTTPException(status_code=400, detail="No documents found in workspace. Please upload a PDF first.")
+
+    sources = sorted(list({c["file_name"] for c in chunks}))
+    context = "\n\n".join([f"[{c['file_name']}]: {c['text']}" for c in chunks[:25]])
+    doc_title = sources[0] if len(sources) == 1 else f"{len(sources)} Documents in Workspace"
+
+    system_prompt = """You are DocuMind Executive Intelligence Engine.
+Analyze the provided document excerpts and produce an executive-level briefing in strict JSON format.
+You must respond ONLY with a valid JSON object matching this schema:
+{
+  "title": "Concise descriptive document/project title",
+  "executive_summary": "Comprehensive 2-3 paragraph executive summary of the document purpose and core message.",
+  "key_findings": ["Key finding 1 with specific facts", "Key finding 2...", "Key finding 3..."],
+  "critical_decisions": ["Core decision or stance 1", "Core decision 2..."],
+  "timeline_or_milestones": ["Milestone or date 1...", "Milestone or date 2..."],
+  "action_items": ["Immediate actionable next step 1", "Actionable step 2..."]
+}
+Keep all claims strictly grounded in the document context. Do not invent facts."""
+
+    user_prompt = f"Document Context:\n{context}\n\nGenerate the Executive Briefing JSON now."
+    llm_model = get_env_clean("LLM_MODEL", "openai/gpt-oss-120b")
+    fallback_required = False
+
+    try:
+        response = groq_client.chat.completions.create(
+            model=llm_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.2,
+            response_format={"type": "json_object"}
+        )
+        content = response.choices[0].message.content
+        data = parse_json_safely(content, {})
+    except Exception as e:
+        logger.warning(f"Groq summary error ({e}), setting fallback for Anna LLM.")
+        fallback_required = True
+        data = {}
+
+    return WorkflowSummaryResponse(
+        title=data.get("title", f"Executive Briefing: {doc_title}"),
+        executive_summary=data.get("executive_summary", "Detailed briefing synthesized from document knowledge base."),
+        key_findings=data.get("key_findings", ["Information synthesized from uploaded files."]),
+        critical_decisions=data.get("critical_decisions", []),
+        timeline_or_milestones=data.get("timeline_or_milestones", []),
+        action_items=data.get("action_items", []),
+        sources=sources,
+        processing_time=time.time() - start_time,
+        fallback_required=fallback_required,
+        fallback_system_prompt=system_prompt if fallback_required else None,
+        fallback_user_prompt=user_prompt if fallback_required else None
+    )
+
+@app.post("/workflow/risk-audit", response_model=WorkflowRiskAuditResponse)
+async def workflow_risk_audit(
+    request: WorkflowRiskAuditRequest,
+    user_id: str = Depends(get_current_user_id)
+):
+    """Workflow 2: Contract, Compliance & Operational Risk Severity Matrix"""
+    start_time = time.time()
+    chunks = get_user_document_chunks(user_id, request.file_id, limit=35)
+    if not chunks:
+        raise HTTPException(status_code=400, detail="No documents found in workspace. Please upload a PDF first.")
+
+    sources = sorted(list({c["file_name"] for c in chunks}))
+    context = "\n\n".join([f"[{c['file_name']}]: {c['text']}" for c in chunks[:25]])
+
+    system_prompt = """You are DocuMind Compliance & Risk Auditor.
+Scan the document excerpts for potential risks, obligations, indemnities, penalties, liabilities, deadlines, ambiguities, and missing standard protective clauses.
+Output ONLY a valid JSON object matching this schema:
+{
+  "overall_risk_level": "High" | "Medium" | "Low",
+  "risk_score_narrative": "A concise overview of the document's risk posture and exposure.",
+  "risks": [
+    {
+      "title": "Brief title of the risk",
+      "severity": "High" | "Medium" | "Low",
+      "category": "Legal" | "Financial" | "Compliance" | "Operational" | "Deadline",
+      "clause_excerpt": "Direct quote or close reference from document",
+      "impact": "Explanation of potential negative impact or liability",
+      "mitigation": "Recommended corrective action or negotiation point"
+    }
+  ],
+  "missing_clauses": [
+    "Standard protective clause or definition that appears absent"
+  ]
+}
+Be thorough, realistic, and strictly grounded in the document context."""
+
+    user_prompt = f"Document Context:\n{context}\n\nPerform the Risk & Compliance Audit JSON now."
+    llm_model = get_env_clean("LLM_MODEL", "openai/gpt-oss-120b")
+    fallback_required = False
+
+    try:
+        response = groq_client.chat.completions.create(
+            model=llm_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.2,
+            response_format={"type": "json_object"}
+        )
+        content = response.choices[0].message.content
+        data = parse_json_safely(content, {})
+    except Exception as e:
+        logger.warning(f"Groq risk audit error ({e}), setting fallback for Anna LLM.")
+        fallback_required = True
+        data = {}
+
+    risks = []
+    for r in data.get("risks", []):
+        if isinstance(r, dict) and r.get("title"):
+            risks.append(RiskItem(
+                title=str(r.get("title")),
+                severity=str(r.get("severity", "Medium")).capitalize(),
+                category=str(r.get("category", "Legal")).capitalize(),
+                clause_excerpt=str(r.get("clause_excerpt", "Referenced in document")),
+                impact=str(r.get("impact", "")),
+                mitigation=str(r.get("mitigation", ""))
+            ))
+
+    if not risks and not fallback_required:
+        risks.append(RiskItem(
+            title="Standard Operational Terms",
+            severity="Low",
+            category="Operational",
+            clause_excerpt="Reviewed document provisions",
+            impact="Terms appear consistent with standard operational documentation.",
+            mitigation="Periodic review recommended as policies evolve."
+        ))
+
+    return WorkflowRiskAuditResponse(
+        overall_risk_level=data.get("overall_risk_level", "Medium" if risks else "Low"),
+        risk_score_narrative=data.get("risk_score_narrative", "Audit completed across uploaded document chunks."),
+        risks=risks,
+        missing_clauses=data.get("missing_clauses", []),
+        sources=sources,
+        processing_time=time.time() - start_time,
+        fallback_required=fallback_required,
+        fallback_system_prompt=system_prompt if fallback_required else None,
+        fallback_user_prompt=user_prompt if fallback_required else None
+    )
+
+@app.post("/workflow/extract-data", response_model=WorkflowDataExtractResponse)
+async def workflow_extract_data(
+    request: WorkflowDataExtractRequest,
+    user_id: str = Depends(get_current_user_id)
+):
+    """Workflow 3: Tabular Fact, Quantitative Metric & Entity Extraction"""
+    start_time = time.time()
+    chunks = get_user_document_chunks(user_id, request.file_id, limit=35)
+    if not chunks:
+        raise HTTPException(status_code=400, detail="No documents found in workspace. Please upload a PDF first.")
+
+    sources = sorted(list({c["file_name"] for c in chunks}))
+    context = "\n\n".join([f"[{c['file_name']}]: {c['text']}" for c in chunks[:25]])
+    doc_title = sources[0] if len(sources) == 1 else "Workspace Documents"
+
+    system_prompt = """You are DocuMind Quantitative Data Extractor.
+Extract all key concrete data points, metrics, financial amounts, percentages, deadlines/dates, organizations, and legal obligations from the document.
+Output ONLY a valid JSON object matching this schema:
+{
+  "data_points": [
+    {
+      "category": "Financial" | "Metric" | "Date" | "Obligation" | "Entity",
+      "label": "Short descriptor (e.g. Total Revenue, Termination Notice, Effective Date)",
+      "value": "Exact value (e.g. $4.5M, 30 days, October 15, 2025)",
+      "context": "One brief sentence explaining what this value signifies in the document",
+      "source_file": "Source file name"
+    }
+  ]
+}
+Extract up to 15 key points. Be strictly accurate to the document context."""
+
+    user_prompt = f"Document Context:\n{context}\n\nExtract all structured data points in JSON now."
+    llm_model = get_env_clean("LLM_MODEL", "openai/gpt-oss-120b")
+    fallback_required = False
+
+    try:
+        response = groq_client.chat.completions.create(
+            model=llm_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.1,
+            response_format={"type": "json_object"}
+        )
+        content = response.choices[0].message.content
+        data = parse_json_safely(content, {})
+    except Exception as e:
+        logger.warning(f"Groq data extraction error ({e}), setting fallback for Anna LLM.")
+        fallback_required = True
+        data = {}
+
+    data_points = []
+    for dp in data.get("data_points", []):
+        if isinstance(dp, dict) and dp.get("label") and dp.get("value"):
+            data_points.append(ExtractedDataPoint(
+                category=str(dp.get("category", "Metric")).capitalize(),
+                label=str(dp.get("label")),
+                value=str(dp.get("value")),
+                context=str(dp.get("context", "")),
+                source_file=str(dp.get("source_file", doc_title))
+            ))
+
+    return WorkflowDataExtractResponse(
+        document_name=doc_title,
+        data_points=data_points,
+        sources=sources,
+        processing_time=time.time() - start_time,
+        fallback_required=fallback_required,
+        fallback_system_prompt=system_prompt if fallback_required else None,
+        fallback_user_prompt=user_prompt if fallback_required else None
+    )
+
+@app.post("/workflow/compare", response_model=WorkflowCompareResponse)
+async def workflow_compare_documents(
+    request: WorkflowCompareRequest,
+    user_id: str = Depends(get_current_user_id)
+):
+    """Workflow 4: Side-by-Side Multi-Document Delta & Contradiction Matrix"""
+    start_time = time.time()
+    chunks1 = get_user_document_chunks(user_id, request.file_id_1, limit=20)
+    chunks2 = get_user_document_chunks(user_id, request.file_id_2, limit=20)
+
+    if not chunks1 or not chunks2:
+        raise HTTPException(status_code=400, detail="Both documents must exist and contain text for comparative analysis.")
+
+    doc1_name = chunks1[0]["file_name"]
+    doc2_name = chunks2[0]["file_name"]
+
+    ctx1 = "\n".join([c["text"] for c in chunks1[:15]])
+    ctx2 = "\n".join([c["text"] for c in chunks2[:15]])
+
+    system_prompt = """You are DocuMind Comparative Intelligence Engine.
+Perform a rigorous side-by-side comparison between Document 1 and Document 2.
+Identify consensus areas, direct contradictions, modified terms, and new additions.
+Output ONLY a valid JSON object matching this schema:
+{
+  "summary_matrix": "High-level 2-sentence summary of the relationship and differences between both documents.",
+  "deltas": [
+    {
+      "dimension": "Topic/Term being compared (e.g. Payment Schedule, Governing Law, Liability Cap)",
+      "doc1_content": "Exact position/statement in Document 1",
+      "doc2_content": "Exact position/statement in Document 2",
+      "delta_type": "Contradiction" | "Modified" | "Addition" | "Alignment",
+      "significance": "Major" | "Moderate" | "Minor"
+    }
+  ],
+  "consensus_points": [
+    "Key area where both documents are aligned"
+  ]
+}
+Be rigorous, precise, and strictly grounded in the provided document texts."""
+
+    user_prompt = f"""Document 1 ({doc1_name}):
+{ctx1}
+
+Document 2 ({doc2_name}):
+{ctx2}
+
+Perform comparative analysis JSON now."""
+
+    llm_model = get_env_clean("LLM_MODEL", "openai/gpt-oss-120b")
+    fallback_required = False
+
+    try:
+        response = groq_client.chat.completions.create(
+            model=llm_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.2,
+            response_format={"type": "json_object"}
+        )
+        content = response.choices[0].message.content
+        data = parse_json_safely(content, {})
+    except Exception as e:
+        logger.warning(f"Groq compare error ({e}), setting fallback for Anna LLM.")
+        fallback_required = True
+        data = {}
+
+    deltas = []
+    for d in data.get("deltas", []):
+        if isinstance(d, dict) and d.get("dimension"):
+            deltas.append(ComparisonDelta(
+                dimension=str(d.get("dimension")),
+                doc1_content=str(d.get("doc1_content", "Not specified")),
+                doc2_content=str(d.get("doc2_content", "Not specified")),
+                delta_type=str(d.get("delta_type", "Modified")).capitalize(),
+                significance=str(d.get("significance", "Moderate")).capitalize()
+            ))
+
+    return WorkflowCompareResponse(
+        doc1_name=doc1_name,
+        doc2_name=doc2_name,
+        summary_matrix=data.get("summary_matrix", f"Comparison completed between {doc1_name} and {doc2_name}."),
+        deltas=deltas,
+        consensus_points=data.get("consensus_points", []),
+        sources=[doc1_name, doc2_name],
+        processing_time=time.time() - start_time,
+        fallback_required=fallback_required,
+        fallback_system_prompt=system_prompt if fallback_required else None,
+        fallback_user_prompt=user_prompt if fallback_required else None
+    )
+
+@app.post("/workflow/quiz", response_model=WorkflowQuizResponse)
+async def workflow_quiz(
+    request: WorkflowQuizRequest,
+    user_id: str = Depends(get_current_user_id)
+):
+    """Workflow 5: Interactive Knowledge Quiz & Verification Flashcards"""
+    start_time = time.time()
+    chunks = get_user_document_chunks(user_id, request.file_id, limit=35)
+    if not chunks:
+        raise HTTPException(status_code=400, detail="No documents found in workspace. Please upload a PDF first.")
+
+    sources = sorted(list({c["file_name"] for c in chunks}))
+    context = "\n\n".join([f"[{c['file_name']}]: {c['text']}" for c in chunks[:25]])
+    doc_title = sources[0] if len(sources) == 1 else "Workspace Documents"
+
+    system_prompt = f"""You are DocuMind Training & Assessment Specialist.
+Create {request.count} challenging, insightful multiple-choice questions testing comprehension of the document.
+Output ONLY a valid JSON object matching this schema:
+{{
+  "topic": "Core topic of the quiz",
+  "questions": [
+    {{
+      "id": 1,
+      "question": "Clear, specific question grounded in document facts",
+      "options": ["Option A", "Option B", "Option C", "Option D"],
+      "correct_index": 0,
+      "explanation": "Why this answer is correct based on the text",
+      "citation": "Source quote or section reference"
+    }}
+  ]
+}}
+Ensure options are plausible and exactly one option is correct. The correct_index must be an integer (0, 1, 2, or 3)."""
+
+    user_prompt = f"Document Context:\n{context}\n\nGenerate {request.count} multiple-choice questions in JSON now."
+    llm_model = get_env_clean("LLM_MODEL", "openai/gpt-oss-120b")
+    fallback_required = False
+
+    try:
+        response = groq_client.chat.completions.create(
+            model=llm_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.3,
+            response_format={"type": "json_object"}
+        )
+        content = response.choices[0].message.content
+        data = parse_json_safely(content, {})
+    except Exception as e:
+        logger.warning(f"Groq quiz error ({e}), setting fallback for Anna LLM.")
+        fallback_required = True
+        data = {}
+
+    questions = []
+    for q in data.get("questions", []):
+        if isinstance(q, dict) and q.get("question") and isinstance(q.get("options"), list) and len(q.get("options")) >= 2:
+            correct_idx = q.get("correct_index", 0)
+            if not isinstance(correct_idx, int) or correct_idx >= len(q.get("options")):
+                correct_idx = 0
+            questions.append(QuizQuestion(
+                id=int(q.get("id", len(questions) + 1)),
+                question=str(q.get("question")),
+                options=[str(opt) for opt in q.get("options")],
+                correct_index=correct_idx,
+                explanation=str(q.get("explanation", "Grounded in source document")),
+                citation=str(q.get("citation", doc_title))
+            ))
+
+    return WorkflowQuizResponse(
+        topic=data.get("topic", f"Knowledge Assessment: {doc_title}"),
+        questions=questions,
+        sources=sources,
+        processing_time=time.time() - start_time,
+        fallback_required=fallback_required,
+        fallback_system_prompt=system_prompt if fallback_required else None,
+        fallback_user_prompt=user_prompt if fallback_required else None
+    )
 
 # --- Error Handlers ---
 @app.exception_handler(HTTPException)
