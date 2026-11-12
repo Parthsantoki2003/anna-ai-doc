@@ -565,6 +565,13 @@
             }
         }
 
+        function getUserDisplayName() {
+            if (anna && anna.user && anna.user.name) {
+                return anna.user.name;
+            }
+            return 'You';
+        }
+
         function addMessageToUI(role, content) {
             const container = document.getElementById('messagesContainer');
             
@@ -572,12 +579,20 @@
                 container.innerHTML = '';
             }
 
+            const isUser = role === 'user';
+            const displayName = isUser ? getUserDisplayName() : 'DocuMind';
+
             const messageDiv = document.createElement('div');
-            messageDiv.className = `message-enter flex ${role === 'user' ? 'justify-end' : 'justify-start'}`;
+            messageDiv.className = `message-enter flex ${isUser ? 'justify-end' : 'justify-start'}`;
             messageDiv.innerHTML = `
-                <div class="chat-bubble ${role} ${role === 'user' ? 'text-white' : 'text-slate-900'}">
-                    <div class="chat-meta"><span class="avatar">${role === 'user' ? 'Y' : 'A'}</span>${role === 'user' ? 'You' : 'Anna'}</div>
-                    <p class="chat-content">${escapeHtml(content)}</p>
+                <div class="chat-bubble ${role} ${isUser ? 'text-white' : 'text-slate-900'}">
+                    <div class="flex items-center gap-1.5 mb-1.5 text-xs font-semibold ${isUser ? 'text-indigo-100' : 'text-slate-700'}">
+                        <span class="w-4 h-4 rounded-full ${isUser ? 'bg-white/20 text-white' : 'bg-indigo-100 text-indigo-600'} flex items-center justify-center text-[9px] shadow-2xs">
+                            <i class="fa-solid ${isUser ? 'fa-user text-[8px]' : 'fa-brain text-[8px]'}"></i>
+                        </span>
+                        <span>${escapeHtml(displayName)}</span>
+                    </div>
+                    <p class="chat-content leading-relaxed">${escapeHtml(content)}</p>
                 </div>
             `;
             container.appendChild(messageDiv);
@@ -592,12 +607,17 @@
             messageDiv.id = id;
             messageDiv.className = 'message-enter flex justify-start';
             messageDiv.innerHTML = `
-                <div class="chat-bubble assistant">
-                    <div class="typing-bubble">
-                        <div class="w-2 h-2 bg-slate-400 rounded-full pulse-dot"></div>
-                        <div class="w-2 h-2 bg-slate-400 rounded-full pulse-dot"></div>
-                        <div class="w-2 h-2 bg-slate-400 rounded-full pulse-dot"></div>
-                        <span class="typing-label">Anna is thinking...</span>
+                <div class="chat-bubble assistant max-w-sm">
+                    <div class="flex items-center gap-2.5 py-0.5">
+                        <span class="w-5 h-5 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center text-[10px] shadow-2xs flex-shrink-0">
+                            <i class="fa-solid fa-brain text-[9px]"></i>
+                        </span>
+                        <div class="flex items-center gap-1 py-1">
+                            <span class="typing-dot"></span>
+                            <span class="typing-dot"></span>
+                            <span class="typing-dot"></span>
+                        </div>
+                        <span class="text-xs font-medium text-slate-500 pl-1">DocuMind is thinking...</span>
                     </div>
                 </div>
             `;
@@ -629,7 +649,7 @@
                         </p>
                         <div class="flex flex-wrap gap-1.5">
                             ${sourcesList.map((src, i) => `
-                                <button type="button" class="evidence-chip px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 rounded-lg text-xs font-medium transition flex items-center gap-1.5 shadow-2xs" data-src-file="${escapeHtml(src.source || 'Document')}" data-src-text="${escapeHtml(src.text || '')}">
+                                <button type="button" class="evidence-chip px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 rounded-lg text-xs font-medium transition flex items-center gap-1.5 shadow-2xs cursor-pointer" data-src-file="${escapeHtml(src.source || 'Document')}" data-src-text="${escapeHtml(src.text || '')}">
                                     <i class="fa-solid fa-file-pdf text-red-500 text-[10px]"></i>
                                     <span class="truncate max-w-[200px]">${escapeHtml(src.source || 'Source')}</span>
                                 </button>
@@ -644,11 +664,14 @@
             
             messageDiv.innerHTML = `
                 <div class="chat-bubble assistant max-w-2xl">
-                    <div class="chat-meta flex items-center justify-between">
+                    <div class="chat-meta flex items-center justify-between mb-2">
                         <div class="flex items-center gap-1.5">
-                            <span class="avatar">D</span>DocuMind
+                            <span class="w-5 h-5 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center text-[10px] shadow-2xs">
+                                <i class="fa-solid fa-brain text-[9px]"></i>
+                            </span>
+                            <span class="text-xs font-bold text-slate-800">DocuMind</span>
                         </div>
-                        <span class="text-[10px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-bold border border-emerald-200">
+                        <span class="text-[10px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-bold border border-emerald-200 shadow-2xs">
                             ✦ ${groundingScore}% Grounded
                         </span>
                     </div>
