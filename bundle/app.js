@@ -343,7 +343,7 @@
             const confirmBtn = document.getElementById('confirmDeleteBtn');
             if (confirmBtn) {
                 confirmBtn.disabled = false;
-                confirmBtn.innerHTML = '<i class="fa-solid fa-trash-alt pointer-events-none"></i><span>Delete</span>';
+                confirmBtn.innerHTML = '<span>Delete</span>';
             }
         }
 
@@ -354,7 +354,7 @@
             const confirmBtn = document.getElementById('confirmDeleteBtn');
             if (confirmBtn) {
                 confirmBtn.disabled = true;
-                confirmBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin pointer-events-none"></i><span>Deleting...</span>';
+                confirmBtn.innerHTML = '<span>Deleting...</span>';
             }
 
             try {
@@ -411,26 +411,26 @@
             if (documents.length === 0) {
                 list.innerHTML = `
                     <div class="text-center py-8 text-slate-400">
-                        <i class="fa-regular fa-file-pdf text-3xl mb-2 text-slate-300"></i>
-                        <p class="text-xs">No documents uploaded yet</p>
+                        <svg class="svg-icon svg-icon-xl" style="color: #cbd5e1; margin: 0 auto 0.5rem auto;" viewBox="0 0 24 24"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+                        <p class="text-xs" style="margin: 0;">No documents uploaded yet</p>
                     </div>
                 `;
                 return;
             }
 
             list.innerHTML = documents.map(doc => `
-                <div class="doc-item group">
+                <div class="doc-item">
                     <div class="flex-1 min-w-0 pr-1">
                         <div class="flex items-center gap-1.5 mb-0.5">
-                            <span class="inline-flex items-center px-1.5 py-0.2 rounded text-[9px] font-extrabold bg-rose-50 text-rose-600 border border-rose-200">PDF</span>
-                            <p class="text-xs font-semibold text-slate-800 truncate" title="${escapeHtml(doc.file_name)}">
+                            <span class="rounded text-[9px] font-extrabold bg-rose-50 text-rose-600 border border-rose-200" style="padding: 1px 4px;">PDF</span>
+                            <p class="text-xs font-semibold text-slate-800 truncate" style="margin: 0;" title="${escapeHtml(doc.file_name)}">
                                 ${escapeHtml(doc.file_name)}
                             </p>
                         </div>
-                        <p class="text-[10px] text-slate-400 font-medium pl-0.5">${doc.chunks_count} chunks indexed</p>
+                        <p class="text-[10px] text-slate-400 font-medium" style="margin: 0;">${doc.chunks_count} chunks indexed</p>
                     </div>
-                    <button type="button" class="text-slate-400 hover:text-rose-600 hover:bg-rose-50 w-7 h-7 rounded-lg flex items-center justify-center transition cursor-pointer flex-shrink-0" title="Delete document" data-delete="${escapeHtml(doc.file_id)}" data-name="${escapeHtml(doc.file_name)}">
-                        <i class="fa-regular fa-trash-can text-xs pointer-events-none"></i>
+                    <button type="button" class="text-slate-400 hover:text-rose-600 rounded flex items-center justify-center transition cursor-pointer flex-shrink-0" style="width: 1.5rem; height: 1.5rem; background: none; border: none;" title="Delete document" data-delete="${escapeHtml(doc.file_id)}" data-name="${escapeHtml(doc.file_name)}">
+                        <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
                     </button>
                 </div>
             `).join('');
@@ -586,13 +586,16 @@
             messageDiv.className = `message-enter flex ${isUser ? 'justify-end' : 'justify-start'}`;
             messageDiv.innerHTML = `
                 <div class="chat-bubble ${role} ${isUser ? 'text-white' : 'text-slate-900'}">
-                    <div class="flex items-center gap-1.5 mb-1.5 text-xs font-semibold ${isUser ? 'text-indigo-100' : 'text-slate-700'}">
-                        <span class="w-4 h-4 rounded-full ${isUser ? 'bg-white/20 text-white' : 'bg-indigo-100 text-indigo-600'} flex items-center justify-center text-[9px] shadow-2xs">
-                            <i class="fa-solid ${isUser ? 'fa-user text-[8px]' : 'fa-brain text-[8px]'}"></i>
+                    <div class="flex items-center gap-1.5 mb-1 text-xs font-semibold ${isUser ? 'text-indigo-100' : 'text-slate-700'}">
+                        <span class="rounded-full flex items-center justify-center" style="width: 1.1rem; height: 1.1rem; background: ${isUser ? 'rgba(255,255,255,0.2)' : '#e0e7ff'}; color: ${isUser ? '#ffffff' : '#4f46e5'};">
+                            ${isUser 
+                                ? '<svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>'
+                                : '<svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M12 2a4 4 0 0 0-4 4v1a4 4 0 0 0-2 3.46 4 4 0 0 0 1 3.54 4 4 0 0 0-1 3 4 4 0 0 0 4 4h4a4 4 0 0 0 4-4 4 4 0 0 0-1-3 4 4 0 0 0 1-3.54A4 4 0 0 0 16 7V6a4 4 0 0 0-4-4Z"></path></svg>'
+                            }
                         </span>
                         <span>${escapeHtml(displayName)}</span>
                     </div>
-                    <p class="chat-content leading-relaxed">${escapeHtml(content)}</p>
+                    <p class="chat-content leading-relaxed" style="margin: 0;">${escapeHtml(content)}</p>
                 </div>
             `;
             container.appendChild(messageDiv);
@@ -609,8 +612,8 @@
             messageDiv.innerHTML = `
                 <div class="chat-bubble assistant max-w-sm">
                     <div class="flex items-center gap-2.5 py-0.5">
-                        <span class="w-5 h-5 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center text-[10px] shadow-2xs flex-shrink-0">
-                            <i class="fa-solid fa-brain text-[9px]"></i>
+                        <span class="rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center flex-shrink-0" style="width: 1.25rem; height: 1.25rem;">
+                            <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M12 2a4 4 0 0 0-4 4v1a4 4 0 0 0-2 3.46 4 4 0 0 0 1 3.54 4 4 0 0 0-1 3 4 4 0 0 0 4 4h4a4 4 0 0 0 4-4 4 4 0 0 0-1-3 4 4 0 0 0 1-3.54A4 4 0 0 0 16 7V6a4 4 0 0 0-4-4Z"></path></svg>
                         </span>
                         <div class="flex items-center gap-1 py-1">
                             <span class="typing-dot"></span>
@@ -644,14 +647,13 @@
             if (sourcesList.length > 0) {
                 sourcesHtml = `
                     <div class="mt-3 pt-3 border-t border-slate-100">
-                        <p class="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-1.5 flex items-center gap-1">
-                            <i class="fa-solid fa-quote-left text-indigo-500"></i> Verified Citations (click to inspect):
+                        <p class="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-1.5 flex items-center gap-1" style="margin: 0 0 6px 0;">
+                            Verified Citations (click to inspect):
                         </p>
-                        <div class="flex flex-wrap gap-1.5">
+                        <div class="flex flex-wrap gap-1.5" style="display: flex; flex-wrap: wrap; gap: 6px;">
                             ${sourcesList.map((src, i) => `
-                                <button type="button" class="evidence-chip px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 rounded-lg text-xs font-medium transition flex items-center gap-1.5 shadow-2xs cursor-pointer" data-src-file="${escapeHtml(src.source || 'Document')}" data-src-text="${escapeHtml(src.text || '')}">
-                                    <i class="fa-solid fa-file-pdf text-red-500 text-[10px]"></i>
-                                    <span class="truncate max-w-[200px]">${escapeHtml(src.source || 'Source')}</span>
+                                <button type="button" class="evidence-chip px-2.5 py-1 bg-indigo-50 border border-indigo-200 text-indigo-700 rounded-lg text-xs font-medium cursor-pointer" data-src-file="${escapeHtml(src.source || 'Document')}" data-src-text="${escapeHtml(src.text || '')}">
+                                    📄 <span class="truncate" style="max-width: 180px;">${escapeHtml(src.source || 'Source')}</span>
                                 </button>
                             `).join('')}
                         </div>
@@ -666,18 +668,18 @@
                 <div class="chat-bubble assistant max-w-2xl">
                     <div class="chat-meta flex items-center justify-between mb-2">
                         <div class="flex items-center gap-1.5">
-                            <span class="w-5 h-5 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center text-[10px] shadow-2xs">
-                                <i class="fa-solid fa-brain text-[9px]"></i>
+                            <span class="rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center flex-shrink-0" style="width: 1.25rem; height: 1.25rem;">
+                                <svg class="svg-icon svg-icon-sm" viewBox="0 0 24 24"><path d="M12 2a4 4 0 0 0-4 4v1a4 4 0 0 0-2 3.46 4 4 0 0 0 1 3.54 4 4 0 0 0-1 3 4 4 0 0 0 4 4h4a4 4 0 0 0 4-4 4 4 0 0 0-1-3 4 4 0 0 0 1-3.54A4 4 0 0 0 16 7V6a4 4 0 0 0-4-4Z"></path></svg>
                             </span>
                             <span class="text-xs font-bold text-slate-800">DocuMind</span>
                         </div>
-                        <span class="text-[10px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-bold border border-emerald-200 shadow-2xs">
+                        <span class="text-[10px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-bold border border-emerald-200">
                             ✦ ${groundingScore}% Grounded
                         </span>
                     </div>
                     <div class="chat-content leading-relaxed mb-2 text-slate-800">${renderMarkdown(answer || 'No answer generated')}</div>
                     ${sourcesHtml}
-                    <p class="text-[10px] text-slate-400 mt-2.5">Synthesized in ${processingTime.toFixed(2)}s via hybrid retrieval</p>
+                    <p class="text-[10px] text-slate-400 mt-2.5" style="margin: 6px 0 0 0;">Synthesized in ${processingTime.toFixed(2)}s via hybrid retrieval</p>
                 </div>
             `;
             
