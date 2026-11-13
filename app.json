@@ -2,8 +2,8 @@
   "name": "DocuMind",
   "slug": "anna-document-workspace",
   "category": "productivity",
-  "tagline": "Intelligent document assistant for Anna OS. Upload PDFs and get instant, zero-hallucination answers backed strictly by verified citations.",
-  "description": "A local-first document workspace for uploading PDFs, hybrid retrieval, source-backed answers, and persistent conversations.",
+  "tagline": "AI-native document studio: executive briefs, risk audits, data extraction, multi-doc comparison, and grounded Q&A backed by verified citations.",
+  "description": "DocuMind is an AI-native document intelligence studio built for Anna OS. Beyond simple chat, it provides five specialized analytical workflows: automated executive briefings, contractual & operational risk auditing, quantitative data & entity extraction, cross-document delta comparison, and interactive retention quizzes—all backed by strict chunk-level citations and grounded confidence scores.",
   "homepage": "https://github.com/Parthsantoki2003/anna-ai-doc",
   "pricing_model": "free"
 }
