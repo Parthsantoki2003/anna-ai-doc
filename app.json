@@ -4,6 +4,15 @@
   "category": "productivity",
   "tagline": "AI-native document studio: executive briefs, risk audits, data extraction, multi-doc comparison, and grounded Q&A backed by verified citations.",
   "description": "DocuMind is an AI-native document intelligence studio built for Anna OS. Beyond simple chat, it provides five specialized analytical workflows: automated executive briefings, contractual & operational risk auditing, quantitative data & entity extraction, cross-document delta comparison, and interactive retention quizzes—all backed by strict chunk-level citations and grounded confidence scores.",
-  "homepage": "https://github.com/Parthsantoki2003/anna-ai-doc",
-  "pricing_model": "free"
+  "homepage_url": "https://github.com/Parthsantoki2003/anna-ai-doc",
+  "privacy_url": "https://github.com/Parthsantoki2003/anna-ai-doc/blob/main/PRIVACY.md",
+  "pricing_model": "free",
+  "screenshots": [
+    "assets/DocuMind Homepage.png",
+    "assets/DocuMInd Executive Brief.png",
+    "assets/DocuMind Risk  assesment.png",
+    "assets/DocuMind Metrics.png",
+    "assets/DocuMind Response.png",
+    "assets/DocuMind Quiz.png"
+  ]
 }
