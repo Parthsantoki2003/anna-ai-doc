@@ -1,17 +1,17 @@
 # Privacy Policy for DocuMind
 
 **Effective Date:** November 4, 2026  
-**Last Updated:** November 4, 2026
+**Last Updated:** November 13, 2026
 
-DocuMind ("we", "our", or "the App") is an intelligent document assistance application built for Anna OS. We respect your privacy and are committed to protecting the information you process through our service. This Privacy Policy explains how data is handled when you use DocuMind.
+DocuMind ("we", "our", or "the App") is an AI-native document intelligence and reasoning studio built for Anna OS. We respect your privacy and are committed to protecting the information you process through our service. This Privacy Policy explains how data is handled when you use DocuMind.
 
 ---
 
 ## 1. Information We Process
 
 When you use DocuMind, the following data may be processed:
-- **Uploaded Documents (PDFs):** Files you explicitly upload to the App to enable grounded Q&A, search, and synthesis.
-- **Questions & Queries:** The natural language prompts and questions you submit regarding your uploaded documents.
+- **Uploaded Documents (PDFs):** Files you explicitly upload to the App to enable grounded Q&A, search, and deep reasoning workflows (Executive Briefing, Contract Risk Audit, Quantitative Data Extraction, Cross-Document Comparison, and Knowledge Retention Quizzes).
+- **Questions, Prompts & Workflow Triggers:** The queries and workflow executions you submit regarding your uploaded documents.
 - **Anonymous Session Identifiers:** A randomly generated client session identifier (`user_id`) stored locally on your device to isolate your workspace and prevent document mixing across sessions.
 
 ---
@@ -20,7 +20,7 @@ When you use DocuMind, the following data may be processed:
 
 Your data is used strictly to provide the core functionality of the App:
 - **Text Extraction & Embedding:** Uploaded documents are parsed and converted into mathematical vector representations (embeddings) for similarity matching.
-- **Grounded Retrieval & Synthesis:** Relevant text excerpts are retrieved to answer your questions accurately using language model inference (Groq API or native Anna OS platform LLM).
+- **Grounded Retrieval & Reasoning Workflows:** Relevant text excerpts are retrieved to answer questions and power analytical workflows using language model inference (Groq API or native Anna OS platform LLM).
 - **Session Isolation:** All vector embeddings and metadata are strictly filtered by your session identifier to ensure complete multi-tenant privacy.
 
 ---
