@@ -11,11 +11,11 @@
             try {
                 uid = localStorage.getItem('anna_doc_user_id');
             } catch (e) {}
-            if (!uid) {
+            if (!uid || uid.length < 8 || uid === 'default_user') {
                 if (anna && anna.user && anna.user.id) {
-                    uid = String(anna.user.id);
+                    uid = 'anna_usr_' + String(anna.user.id);
                 } else if (anna && anna.account && anna.account.id) {
-                    uid = String(anna.account.id);
+                    uid = 'anna_acc_' + String(anna.account.id);
                 } else {
                     const rnd = (typeof crypto !== 'undefined' && crypto.randomUUID)
                         ? crypto.randomUUID().replace(/-/g, '')
@@ -391,8 +391,9 @@
             const badge = document.getElementById('docCountBadge');
             if (badge) badge.textContent = documents.length;
 
-            // Populate compare selectors
+            // Populate compare selectors and target document scope selector
             updateCompareDropdowns(documents);
+            updateDocumentScopeDropdown(documents);
 
             // Enable or disable chat input based on documents
             const hasDocs = documents.length > 0;
@@ -483,6 +484,9 @@
                 return;
             }
 
+            const docScope = getSelectedDocumentScope();
+            if (!docScope) return;
+
             addMessageToUI('user', query);
             document.getElementById('queryInput').value = '';
             document.getElementById('submitBtn').disabled = true;
@@ -499,12 +503,17 @@
                     body: JSON.stringify({
                         query,
                         top_k: 5,
+                        file_ids: docScope.file_ids,
+                        conversation_id: currentConversationId,
                         generate_answer: true,
                         conversation_context: conversationHistory.slice(-6)
                     })
                 });
 
-                if (!response.ok) throw new Error('Query failed');
+                if (!response.ok) {
+                    const errBody = await response.json().catch(() => ({}));
+                    throw new Error(errBody.detail || 'Query failed');
+                }
 
                 const data = await response.json();
                 
@@ -554,7 +563,7 @@
 
                 currentConversationId = data.conversation_id;
 
-                addAssistantMessage(answer, data.sources, data.processing_time);
+                addAssistantMessage(answer, data.sources, data.processing_time, data.grounding_score);
                 updateConversationHistory();
 
             } catch (error) {
@@ -630,25 +639,31 @@
             return id;
         }
 
-        function addAssistantMessage(answer, sources, processingTime, groundingScore = 96) {
+        function addAssistantMessage(answer, sources, processingTime, groundingScore = 0) {
             const container = document.getElementById('messagesContainer');
-            
+            const sourcesList = Array.isArray(sources) ? sources : [];
+            const effectiveScore = sourcesList.length === 0 ? 0 : (groundingScore ?? 90);
+
             // Update top header grounding badge
             const gBadge = document.getElementById('groundingBadge');
             const gText = document.getElementById('groundingScoreText');
             if (gBadge && gText) {
-                gBadge.classList.remove('hidden');
-                gBadge.classList.add('flex');
-                gText.textContent = `${groundingScore}% Grounded`;
+                if (effectiveScore > 0) {
+                    gBadge.classList.remove('hidden');
+                    gBadge.classList.add('flex');
+                    gText.textContent = `${effectiveScore}% Grounded`;
+                } else {
+                    gBadge.classList.add('hidden');
+                    gBadge.classList.remove('flex');
+                }
             }
 
-            const sourcesList = Array.isArray(sources) ? sources : [];
             let sourcesHtml = '';
             if (sourcesList.length > 0) {
                 sourcesHtml = `
                     <div class="mt-3 pt-3 border-t border-slate-100">
                         <p class="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-1.5 flex items-center gap-1" style="margin: 0 0 6px 0;">
-                            Verified Citations (click to inspect):
+                            Verified Supporting Citations (click to inspect):
                         </p>
                         <div class="flex flex-wrap gap-1.5" style="display: flex; flex-wrap: wrap; gap: 6px;">
                             ${sourcesList.map((src, i) => `
@@ -660,6 +675,10 @@
                     </div>
                 `;
             }
+
+            const badgeHtml = effectiveScore > 0
+                ? `<span class="text-[10px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-bold border border-emerald-200">✦ ${effectiveScore}% Grounded</span>`
+                : `<span class="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-bold border border-slate-200">No Matching Source</span>`;
 
             const messageDiv = document.createElement('div');
             messageDiv.className = 'message-enter flex justify-start';
@@ -673,9 +692,7 @@
                             </span>
                             <span class="text-xs font-bold text-slate-800">DocuMind</span>
                         </div>
-                        <span class="text-[10px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-bold border border-emerald-200">
-                            ✦ ${groundingScore}% Grounded
-                        </span>
+                        ${badgeHtml}
                     </div>
                     <div class="chat-content leading-relaxed mb-2 text-slate-800">${renderMarkdown(answer || 'No answer generated')}</div>
                     ${sourcesHtml}
@@ -805,6 +822,18 @@
                 }
             });
 
+            // Show target document scope bar on all tabs except 'compare' (which uses side-by-side Doc A / Doc B selectors)
+            const scopeBar = document.getElementById('documentScopeBar');
+            if (scopeBar) {
+                if (tabKey === 'compare') {
+                    scopeBar.classList.add('hidden');
+                    scopeBar.classList.remove('flex');
+                } else {
+                    scopeBar.classList.remove('hidden');
+                    scopeBar.classList.add('flex');
+                }
+            }
+
             // Toggle views
             const viewMap = {
                 chat: 'chatView',
@@ -829,6 +858,68 @@
             });
         }
 
+        function updateDocumentScopeDropdown(documents) {
+            const sel = document.getElementById('activeDocumentSelect');
+            if (!sel) return;
+            const prevValue = sel.value;
+
+            if (!documents || documents.length === 0) {
+                sel.innerHTML = '<option value="">No documents uploaded</option>';
+                return;
+            }
+
+            if (documents.length === 1) {
+                sel.innerHTML = `<option value="${escapeHtml(documents[0].file_id)}" selected>📄 ${escapeHtml(documents[0].file_name)}</option>`;
+                return;
+            }
+
+            // When multiple documents are uploaded, require explicit user choice rather than silently picking one
+            const options = [
+                `<option value="__PROMPT__">-- Choose target document (${documents.length} uploaded) --</option>`,
+                `<option value="__ALL__">📚 All Uploaded Documents (${documents.length} files)</option>`,
+                ...documents.map(d => `<option value="${escapeHtml(d.file_id)}">📄 ${escapeHtml(d.file_name)}</option>`)
+            ];
+            sel.innerHTML = options.join('');
+
+            if (prevValue && (prevValue === '__ALL__' || documents.some(d => d.file_id === prevValue))) {
+                sel.value = prevValue;
+            } else {
+                sel.value = '__PROMPT__';
+            }
+        }
+
+        function getSelectedDocumentScope() {
+            const sel = document.getElementById('activeDocumentSelect');
+            if (documentsLoaded.length === 0) {
+                showNotification('Please upload a PDF document first', 'warning');
+                return null;
+            }
+            if (documentsLoaded.length === 1) {
+                return { file_ids: [documentsLoaded[0].file_id], scope: 'single' };
+            }
+            const val = sel ? sel.value : '__PROMPT__';
+            if (!val || val === '__PROMPT__') {
+                showNotification('Multiple documents uploaded: please select a target document (or "All Uploaded Documents") from the Target Document selector bar above.', 'warning');
+                if (sel) sel.focus();
+                return null;
+            }
+            if (val === '__ALL__') {
+                return { file_ids: documentsLoaded.map(d => d.file_id), scope: 'all' };
+            }
+            return { file_ids: [val], scope: 'single' };
+        }
+
+        function renderSourceBadgesHtml(sources) {
+            const list = Array.isArray(sources) ? sources : [];
+            if (list.length === 0) return '';
+            return `
+                <div class="flex items-center flex-wrap gap-1.5 pt-2">
+                    <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Analyzed Sources:</span>
+                    ${list.map(s => `<span class="px-2 py-0.5 rounded-full bg-indigo-50 border border-indigo-200 text-indigo-700 text-[11px] font-semibold">📄 ${escapeHtml(s)}</span>`).join('')}
+                </div>
+            `;
+        }
+
         function updateCompareDropdowns(documents) {
             const sel1 = document.getElementById('compareDoc1');
             const sel2 = document.getElementById('compareDoc2');
@@ -849,10 +940,8 @@
 
         // --- Workflow 1: Executive Briefing ---
         async function runExecutiveSummary() {
-            if (documentsLoaded.length === 0) {
-                showNotification('Please upload a PDF document first', 'warning');
-                return;
-            }
+            const docScope = getSelectedDocumentScope();
+            if (!docScope) return;
 
             const btn = document.getElementById('runSummaryBtn');
             const container = document.getElementById('summaryContent');
@@ -861,7 +950,7 @@
             container.innerHTML = `
                 <div class="p-8 text-center space-y-3">
                     <i class="fa-solid fa-circle-notch fa-spin text-4xl text-indigo-600"></i>
-                    <p class="text-sm font-semibold text-slate-700">Synthesizing Executive Briefing across document chunks...</p>
+                    <p class="text-sm font-semibold text-slate-700">Synthesizing Executive Briefing across selected document(s)...</p>
                     <p class="text-xs text-slate-500">Decomposing core thesis, findings, decisions, and action items.</p>
                 </div>
             `;
@@ -870,7 +959,7 @@
                 const resp = await fetch(`${API_BASE}/workflow/executive-summary`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-User-Id': getUserId() },
-                    body: JSON.stringify({})
+                    body: JSON.stringify(docScope)
                 });
 
                 if (!resp.ok) {
@@ -890,6 +979,7 @@
                         </div>
                         <h4 class="text-xl font-bold text-slate-900">${escapeHtml(data.title)}</h4>
                         <p class="text-sm text-slate-700 leading-relaxed">${renderMarkdown(data.executive_summary)}</p>
+                        ${renderSourceBadgesHtml(data.sources)}
                     </div>
 
                     <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -949,10 +1039,8 @@
 
         // --- Workflow 2: Risk Audit ---
         async function runRiskAudit() {
-            if (documentsLoaded.length === 0) {
-                showNotification('Please upload a PDF document first', 'warning');
-                return;
-            }
+            const docScope = getSelectedDocumentScope();
+            if (!docScope) return;
 
             const btn = document.getElementById('runRiskAuditBtn');
             const container = document.getElementById('riskAuditContent');
@@ -961,7 +1049,7 @@
             container.innerHTML = `
                 <div class="p-8 text-center space-y-3">
                     <i class="fa-solid fa-circle-notch fa-spin text-4xl text-red-600"></i>
-                    <p class="text-sm font-semibold text-slate-700">Scanning document for contractual, financial, and compliance risks...</p>
+                    <p class="text-sm font-semibold text-slate-700">Scanning selected document(s) for contractual, financial, and compliance risks...</p>
                     <p class="text-xs text-slate-500">Checking liability caps, indemnities, penalties, and missing standard clauses.</p>
                 </div>
             `;
@@ -970,7 +1058,7 @@
                 const resp = await fetch(`${API_BASE}/workflow/risk-audit`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-User-Id': getUserId() },
-                    body: JSON.stringify({})
+                    body: JSON.stringify(docScope)
                 });
 
                 if (!resp.ok) {
@@ -1002,6 +1090,7 @@
                                     </span>
                                 </div>
                                 <p class="text-xs text-slate-600 mt-1">${escapeHtml(data.risk_score_narrative)}</p>
+                                ${renderSourceBadgesHtml(data.sources)}
                             </div>
                         </div>
                     </div>
@@ -1063,10 +1152,8 @@
 
         // --- Workflow 3: Data & Metric Extraction ---
         async function runDataExtract() {
-            if (documentsLoaded.length === 0) {
-                showNotification('Please upload a PDF document first', 'warning');
-                return;
-            }
+            const docScope = getSelectedDocumentScope();
+            if (!docScope) return;
 
             const btn = document.getElementById('runExtractBtn');
             const copyBtn = document.getElementById('copyDataCsvBtn');
@@ -1076,7 +1163,7 @@
             container.innerHTML = `
                 <div class="p-8 text-center space-y-3">
                     <i class="fa-solid fa-circle-notch fa-spin text-4xl text-blue-600"></i>
-                    <p class="text-sm font-semibold text-slate-700">Deconstructing document into quantitative metrics, dates, and entities...</p>
+                    <p class="text-sm font-semibold text-slate-700">Deconstructing selected document(s) into quantitative metrics, dates, and entities...</p>
                 </div>
             `;
 
@@ -1084,7 +1171,7 @@
                 const resp = await fetch(`${API_BASE}/workflow/extract-data`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-User-Id': getUserId() },
-                    body: JSON.stringify({})
+                    body: JSON.stringify(docScope)
                 });
 
                 if (!resp.ok) {
@@ -1109,9 +1196,9 @@
 
                 container.innerHTML = `
                     <div class="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden">
-                        <div class="px-5 py-3.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+                        <div class="px-5 py-3.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between flex-wrap gap-2">
                             <span class="text-xs font-bold text-slate-700">${currentExtractedPoints.length} Structured Metrics Identified</span>
-                            <span class="text-[10px] text-slate-500">Document: ${escapeHtml(data.document_name)}</span>
+                            ${renderSourceBadgesHtml(data.sources)}
                         </div>
                         <div class="overflow-x-auto">
                             <table class="w-full text-left text-xs">
@@ -1121,6 +1208,7 @@
                                         <th class="py-2.5 px-4">Metric Descriptor</th>
                                         <th class="py-2.5 px-4 font-bold text-slate-800">Value</th>
                                         <th class="py-2.5 px-4">Context & Significance</th>
+                                        <th class="py-2.5 px-4">Source File</th>
                                     </tr>
                                 </thead>
                                 <tbody class="divide-y divide-slate-100 text-slate-700">
@@ -1134,6 +1222,7 @@
                                             <td class="py-3 px-4 font-semibold text-slate-900">${escapeHtml(dp.label)}</td>
                                             <td class="py-3 px-4 font-mono font-bold text-indigo-600">${escapeHtml(dp.value)}</td>
                                             <td class="py-3 px-4 text-slate-600">${escapeHtml(dp.context)}</td>
+                                            <td class="py-3 px-4 text-slate-500 font-medium">📄 ${escapeHtml(dp.source_file || data.document_name)}</td>
                                         </tr>
                                     `).join('')}
                                 </tbody>
@@ -1278,10 +1367,8 @@
 
         // --- Workflow 5: Interactive Knowledge Quiz ---
         async function runQuiz() {
-            if (documentsLoaded.length === 0) {
-                showNotification('Please upload a PDF document first', 'warning');
-                return;
-            }
+            const docScope = getSelectedDocumentScope();
+            if (!docScope) return;
 
             const btn = document.getElementById('runQuizBtn');
             const scoreBadge = document.getElementById('quizScoreBadge');
@@ -1291,7 +1378,7 @@
             container.innerHTML = `
                 <div class="p-8 text-center space-y-3">
                     <i class="fa-solid fa-circle-notch fa-spin text-4xl text-emerald-600"></i>
-                    <p class="text-sm font-semibold text-slate-700">Deconstructing document into interactive knowledge checks...</p>
+                    <p class="text-sm font-semibold text-slate-700">Deconstructing selected document(s) into interactive knowledge checks...</p>
                 </div>
             `;
 
@@ -1299,7 +1386,7 @@
                 const resp = await fetch(`${API_BASE}/workflow/quiz`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-User-Id': getUserId() },
-                    body: JSON.stringify({ count: 5 })
+                    body: JSON.stringify({ ...docScope, count: 5 })
                 });
 
                 if (!resp.ok) {
@@ -1319,9 +1406,12 @@
 
                 container.innerHTML = `
                     <div class="space-y-4 max-w-2xl mx-auto">
-                        <div class="p-4 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between">
-                            <span class="text-xs font-bold text-slate-800">${escapeHtml(data.topic)}</span>
-                            <span class="text-xs text-slate-500">${activeQuizQuestions.length} Questions</span>
+                        <div class="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+                            <div class="flex items-center justify-between">
+                                <span class="text-xs font-bold text-slate-800">${escapeHtml(data.topic)}</span>
+                                <span class="text-xs text-slate-500">${activeQuizQuestions.length} Questions</span>
+                            </div>
+                            ${renderSourceBadgesHtml(data.sources)}
                         </div>
                         ${activeQuizQuestions.map((q, qIdx) => `
                             <div class="quiz-card p-5 rounded-xl border border-slate-200 bg-white shadow-2xs space-y-3" id="qcard-${qIdx}">

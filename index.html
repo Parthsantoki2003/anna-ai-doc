@@ -689,6 +689,20 @@
             </button>
         </nav>
 
+        <!-- Target Document Scope Selector Bar -->
+        <div id="documentScopeBar" class="px-6 py-2 bg-white border-b border-slate-200 flex items-center justify-between flex-shrink-0">
+            <div class="flex items-center gap-2.5">
+                <span class="text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+                    <svg class="svg-icon svg-icon-sm" style="color: #4f46e5;" viewBox="0 0 24 24"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+                    <span>Target Document:</span>
+                </span>
+                <select id="activeDocumentSelect" class="text-xs px-3 py-1.5 rounded-lg border border-slate-300 bg-slate-50 font-semibold text-slate-800" style="outline: none; min-width: 260px;">
+                    <option value="">No documents uploaded</option>
+                </select>
+            </div>
+            <span id="activeScopeHint" class="text-[11px] text-slate-500 font-medium">Answers, citations & workflows are strictly scoped to your selection.</span>
+        </div>
+
         <!-- VIEW 1: Chat & Q&A -->
         <div id="chatView" class="workflow-view flex-1 flex flex-col min-h-0 bg-slate-50">
             <div id="messagesContainer" class="flex-1 overflow-y-auto px-8 py-6 space-y-4">
