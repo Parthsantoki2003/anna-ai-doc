@@ -920,6 +920,125 @@
             `;
         }
 
+        function parseAnnaJsonSafely(rawText) {
+            if (!rawText || typeof rawText !== 'string') return null;
+            let cleaned = rawText.trim();
+            if (cleaned.startsWith('```')) {
+                const match = cleaned.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+                if (match && match[1]) cleaned = match[1].trim();
+            }
+            try {
+                return JSON.parse(cleaned);
+            } catch (e) {
+                const objMatch = cleaned.match(/\{[\s\S]*\}/);
+                if (objMatch) {
+                    try {
+                        return JSON.parse(objMatch[0]);
+                    } catch (e2) {}
+                }
+            }
+            return null;
+        }
+
+        async function runAnnaWorkflowFallback(data, workflowType, workflowLabel) {
+            if (!data || !data.fallback_required) return data;
+            if (!anna || !anna.llm || typeof anna.llm.complete !== 'function') {
+                showNotification(`Groq limit reached and Anna platform LLM is unavailable in standalone mode for ${workflowLabel}.`, 'warning');
+                return data;
+            }
+
+            try {
+                showNotification(`Groq limit reached: generating ${workflowLabel} via Anna LLM failover...`, 'info');
+                const fallbackRes = await anna.llm.complete({
+                    systemPrompt: data.fallback_system_prompt,
+                    messages: [
+                        { role: 'user', content: data.fallback_user_prompt }
+                    ]
+                });
+                const rawText = fallbackRes?.text ||
+                    (typeof fallbackRes?.content === 'string' ? fallbackRes.content : null) ||
+                    (Array.isArray(fallbackRes?.content) && fallbackRes.content[0]?.text) ||
+                    fallbackRes?.result ||
+                    fallbackRes?.message?.content ||
+                    (typeof fallbackRes === 'string' ? fallbackRes : null);
+
+                if (!rawText) throw new Error('Empty response from Anna LLM');
+                const parsed = parseAnnaJsonSafely(rawText);
+                if (!parsed) throw new Error('Could not parse structured JSON from Anna LLM response');
+
+                if (workflowType === 'summary') {
+                    if (parsed.title) data.title = String(parsed.title);
+                    if (parsed.executive_summary) data.executive_summary = String(parsed.executive_summary);
+                    if (Array.isArray(parsed.key_findings)) data.key_findings = parsed.key_findings.map(String);
+                    if (Array.isArray(parsed.critical_decisions)) data.critical_decisions = parsed.critical_decisions.map(String);
+                    if (Array.isArray(parsed.timeline_or_milestones)) data.timeline_or_milestones = parsed.timeline_or_milestones.map(String);
+                    if (Array.isArray(parsed.action_items)) data.action_items = parsed.action_items.map(String);
+                } else if (workflowType === 'risks') {
+                    if (parsed.overall_risk_level) data.overall_risk_level = String(parsed.overall_risk_level);
+                    if (parsed.risk_score_narrative) data.risk_score_narrative = String(parsed.risk_score_narrative);
+                    if (Array.isArray(parsed.risks)) {
+                        data.risks = parsed.risks
+                            .filter(r => r && r.title)
+                            .map(r => ({
+                                title: String(r.title),
+                                severity: String(r.severity || 'Medium'),
+                                category: String(r.category || 'Legal'),
+                                clause_excerpt: String(r.clause_excerpt || 'Referenced in document'),
+                                impact: String(r.impact || ''),
+                                mitigation: String(r.mitigation || '')
+                            }));
+                    }
+                    if (Array.isArray(parsed.missing_clauses)) data.missing_clauses = parsed.missing_clauses.map(String);
+                } else if (workflowType === 'extract') {
+                    if (Array.isArray(parsed.data_points)) {
+                        data.data_points = parsed.data_points
+                            .filter(dp => dp && dp.label && dp.value)
+                            .map(dp => ({
+                                category: String(dp.category || 'Metric'),
+                                label: String(dp.label),
+                                value: String(dp.value),
+                                context: String(dp.context || ''),
+                                source_file: String(dp.source_file || data.document_name || 'Document')
+                            }));
+                    }
+                } else if (workflowType === 'compare') {
+                    if (parsed.summary_matrix) data.summary_matrix = String(parsed.summary_matrix);
+                    if (Array.isArray(parsed.deltas)) {
+                        data.deltas = parsed.deltas
+                            .filter(d => d && d.dimension)
+                            .map(d => ({
+                                dimension: String(d.dimension),
+                                doc1_content: String(d.doc1_content || 'Not specified'),
+                                doc2_content: String(d.doc2_content || 'Not specified'),
+                                delta_type: String(d.delta_type || 'Modified'),
+                                significance: String(d.significance || 'Moderate')
+                            }));
+                    }
+                    if (Array.isArray(parsed.consensus_points)) data.consensus_points = parsed.consensus_points.map(String);
+                } else if (workflowType === 'quiz') {
+                    if (parsed.topic) data.topic = String(parsed.topic);
+                    if (Array.isArray(parsed.questions)) {
+                        data.questions = parsed.questions
+                            .filter(q => q && q.question && Array.isArray(q.options) && q.options.length >= 2)
+                            .map((q, idx) => ({
+                                id: Number(q.id || idx + 1),
+                                question: String(q.question),
+                                options: q.options.map(String),
+                                correct_index: (typeof q.correct_index === 'number' && q.correct_index < q.options.length) ? q.correct_index : 0,
+                                explanation: String(q.explanation || 'Grounded in source document'),
+                                citation: String(q.citation || (data.sources && data.sources[0]) || 'Document')
+                            }));
+                    }
+                }
+
+                showNotification(`${workflowLabel} generated via Anna LLM failover`, 'success');
+            } catch (fallbackErr) {
+                console.warn(`Anna LLM fallback failed for ${workflowLabel}:`, fallbackErr);
+                showNotification(`Anna LLM failover could not complete ${workflowLabel}: ${fallbackErr.message}`, 'warning');
+            }
+            return data;
+        }
+
         function updateCompareDropdowns(documents) {
             const sel1 = document.getElementById('compareDoc1');
             const sel2 = document.getElementById('compareDoc2');
@@ -967,7 +1086,8 @@
                     throw new Error(err.detail || 'Summary generation failed');
                 }
 
-                const data = await resp.json();
+                let data = await resp.json();
+                data = await runAnnaWorkflowFallback(data, 'summary', 'Executive Briefing');
                 latestWorkflowData = { type: 'summary', data };
                 lastReportMarkdown = compileSummaryReport(data);
 
@@ -1066,7 +1186,8 @@
                     throw new Error(err.detail || 'Risk audit failed');
                 }
 
-                const data = await resp.json();
+                let data = await resp.json();
+                data = await runAnnaWorkflowFallback(data, 'risks', 'Risk Audit');
                 latestWorkflowData = { type: 'risks', data };
                 lastReportMarkdown = compileRiskReport(data);
 
@@ -1179,7 +1300,8 @@
                     throw new Error(err.detail || 'Extraction failed');
                 }
 
-                const data = await resp.json();
+                let data = await resp.json();
+                data = await runAnnaWorkflowFallback(data, 'extract', 'Data Extraction');
                 latestWorkflowData = { type: 'extract', data };
                 currentExtractedPoints = data.data_points || [];
                 lastReportMarkdown = compileDataReport(data);
@@ -1295,7 +1417,8 @@
                     throw new Error(err.detail || 'Comparison failed');
                 }
 
-                const data = await resp.json();
+                let data = await resp.json();
+                data = await runAnnaWorkflowFallback(data, 'compare', 'Document Comparison');
                 latestWorkflowData = { type: 'compare', data };
                 lastReportMarkdown = compileCompareReport(data);
 
@@ -1394,7 +1517,8 @@
                     throw new Error(err.detail || 'Quiz generation failed');
                 }
 
-                const data = await resp.json();
+                let data = await resp.json();
+                data = await runAnnaWorkflowFallback(data, 'quiz', 'Knowledge Quiz');
                 activeQuizQuestions = data.questions || [];
                 currentQuizScore = 0;
                 answeredQuestions.clear();
@@ -1623,5 +1747,4 @@
             startNewConversation();
             loadDocuments();
             loadStats();
-            setInterval(loadStats, 5000);
         });

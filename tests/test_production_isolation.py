@@ -254,6 +254,87 @@ def test_workflow_document_targeting_isolation():
         assert "Maritime Shipping Charter" not in captured_contexts[0]
 
 
+def test_anna_llm_fallback_on_all_5_workflows_and_query():
+    """Verify Groq rate-limit triggers fallback_required=True with full schema prompts across all 5 workflows + query."""
+    reset_isolated_state()
+    client = TestClient(main.app)
+    user_id = "usr_fallback_tester_007"
+    pdf_1 = make_pdf_bytes(["Contract A specifies a $100,000 liability cap and 30-day termination notice."])
+    pdf_2 = make_pdf_bytes(["Contract B specifies a $250,000 liability cap and 60-day termination notice."])
+
+    r1 = client.post(
+        "/ingest",
+        files={"file": ("contract_A.pdf", io.BytesIO(pdf_1), "application/pdf")},
+        headers={"X-User-Id": user_id},
+    )
+    r2 = client.post(
+        "/ingest",
+        files={"file": ("contract_B.pdf", io.BytesIO(pdf_2), "application/pdf")},
+        headers={"X-User-Id": user_id},
+    )
+    fid1 = r1.json()["file_id"]
+    fid2 = r2.json()["file_id"]
+
+    def raise_rate_limit(**kwargs):
+        raise RuntimeError("429 Too Many Requests: Groq rate limit reached")
+
+    with patch.object(main.groq_client.chat.completions, "create", side_effect=raise_rate_limit):
+        # 1. Query fallback
+        q_res = client.post(
+            "/query",
+            json={"query": "What is the liability cap in Contract A?", "file_ids": [fid1]},
+            headers={"X-User-Id": user_id},
+        ).json()
+        assert q_res["fallback_required"] is True
+        assert q_res["fallback_system_prompt"] and "Not found in the selected documents" in q_res["fallback_system_prompt"]
+        assert "Contract A specifies a $100,000 liability cap" in q_res["fallback_user_prompt"]
+
+        # 2. Executive Summary fallback
+        s_res = client.post(
+            "/workflow/executive-summary",
+            json={"file_ids": [fid1], "scope": "single"},
+            headers={"X-User-Id": user_id},
+        ).json()
+        assert s_res["fallback_required"] is True
+        assert "key_findings" in s_res["fallback_system_prompt"]
+
+        # 3. Risk Audit fallback
+        rk_res = client.post(
+            "/workflow/risk-audit",
+            json={"file_ids": [fid1], "scope": "single"},
+            headers={"X-User-Id": user_id},
+        ).json()
+        assert rk_res["fallback_required"] is True
+        assert "overall_risk_level" in rk_res["fallback_system_prompt"]
+
+        # 4. Extract Data fallback
+        ex_res = client.post(
+            "/workflow/extract-data",
+            json={"file_ids": [fid1], "scope": "single"},
+            headers={"X-User-Id": user_id},
+        ).json()
+        assert ex_res["fallback_required"] is True
+        assert "data_points" in ex_res["fallback_system_prompt"]
+
+        # 5. Compare Documents fallback
+        cmp_res = client.post(
+            "/workflow/compare",
+            json={"file_id_1": fid1, "file_id_2": fid2},
+            headers={"X-User-Id": user_id},
+        ).json()
+        assert cmp_res["fallback_required"] is True
+        assert "deltas" in cmp_res["fallback_system_prompt"]
+
+        # 6. Quiz fallback
+        qz_res = client.post(
+            "/workflow/quiz",
+            json={"file_ids": [fid1], "scope": "single", "count": 5},
+            headers={"X-User-Id": user_id},
+        ).json()
+        assert qz_res["fallback_required"] is True
+        assert "questions" in qz_res["fallback_system_prompt"]
+
+
 if __name__ == "__main__":
     tests = [
         test_missing_or_weak_user_id_rejected,
@@ -261,6 +342,7 @@ if __name__ == "__main__":
         test_unrelated_documents_citation_precision,
         test_unanswerable_query_returns_zero_citations,
         test_workflow_document_targeting_isolation,
+        test_anna_llm_fallback_on_all_5_workflows_and_query,
     ]
     for t in tests:
         print(f"Running {t.__name__}...", end=" ", flush=True)
